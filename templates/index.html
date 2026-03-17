@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TunerPro XDF Viewer</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260311e" />
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="logo">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+      TunerPro XDF Viewer
+    </div>
+    <div class="header-meta" id="header-meta"></div>
+  </div>
+</header>
+
+<div class="upload-panel" id="upload-panel">
+  <div class="upload-grid">
+    <div class="drop-zone" id="drop-xdf" data-target="xdf">
+      <div class="drop-icon">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="12" y1="18" x2="12" y2="12"/>
+          <line x1="9" y1="15" x2="15" y2="15"/>
+        </svg>
+      </div>
+      <div class="drop-label">Drop <strong>.xdf</strong> here</div>
+      <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-xdf" accept=".xdf,.xml" hidden /></label></div>
+      <div class="drop-status" id="status-xdf">No file selected</div>
+    </div>
+
+    <div class="drop-zone" id="drop-bin" data-target="bin">
+      <div class="drop-icon">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="3" width="20" height="14" rx="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+      </div>
+      <div class="drop-label">Drop <strong>.bin</strong> here</div>
+      <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-bin" accept=".bin,.hex,*" hidden /></label></div>
+      <div class="drop-status" id="status-bin">No file selected</div>
+    </div>
+
+    <div class="drop-zone drop-zone--optional" id="drop-bin2" data-target="bin2">
+      <div class="drop-icon">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="3" width="20" height="14" rx="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+          <circle cx="18" cy="5" r="5" fill="#f59e0b" stroke="none"/>
+          <line x1="18" y1="3" x2="18" y2="7" stroke="#1a1a2e" stroke-width="1.5"/>
+          <line x1="16" y1="5" x2="20" y2="5" stroke="#1a1a2e" stroke-width="1.5"/>
+        </svg>
+      </div>
+      <div class="drop-label"><strong>Second .bin</strong> <span class="optional-badge">optional diff</span></div>
+      <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-bin2" accept=".bin,.hex,*" hidden /></label></div>
+      <div class="drop-status" id="status-bin2">No file selected</div>
+    </div>
+  </div>
+
+  <div class="upload-actions">
+    <button class="btn btn-primary" id="btn-parse" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="5 12 12 5 19 12"/>
+        <line x1="12" y1="5" x2="12" y2="19"/>
+      </svg>
+      Parse Files
+    </button>
+    <button class="btn btn-ghost" id="btn-debug" disabled title="Inspect raw XDF parse: addresses, dims, strides, math">Debug XDF</button>
+    <button class="btn btn-ghost" id="btn-clear" style="display:none">Clear</button>
+  </div>
+
+  <div class="progress-bar" id="progress-bar" style="display:none">
+    <div class="progress-fill" id="progress-fill"></div>
+  </div>
+  <div class="upload-error" id="upload-error" style="display:none"></div>
+</div>
+
+<div class="results-area" id="results-area" style="display:none">
+  <div class="toolbar">
+    <div class="search-wrap">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <input type="text" id="search-input" placeholder="Search tables and families..." autocomplete="off" />
+      <button class="search-clear" id="search-clear" style="display:none">x</button>
+    </div>
+
+    <div class="toolbar-right">
+      <span class="count-badge" id="count-badge">0 / 0 shown</span>
+      <div class="view-select-wrap">
+        <label class="view-select-label" for="view-mode">View</label>
+        <select class="view-select" id="view-mode" title="Choose how tables are grouped">
+          <option value="workflow">Tuner Workflow</option>
+          <option value="hierarchy">TunerPro Hierarchy</option>
+          <option value="flat">Flat List</option>
+        </select>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="btn-hide-autogen" title="Toggle autogen axis tables">Autogen Hidden</button>
+      <button class="btn btn-ghost btn-sm" id="btn-ai-context" title="Show AI context prompt">AI Context</button>
+      <button class="btn btn-ghost btn-sm" id="btn-collapse-all">Collapse All</button>
+      <button class="btn btn-ghost btn-sm" id="btn-new-files">New Files</button>
+    </div>
+  </div>
+
+  <div class="table-list" id="table-list"></div>
+</div>
+
+<div class="modal-backdrop" id="debug-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <span>XDF Debug - Raw Parse Output</span>
+      <button class="modal-close" id="debug-close">x</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">This shows the raw values extracted from your XDF file. Check <strong>z_rows / z_cols</strong>, <strong>z_file_addr_hex</strong>, and <strong>sample_hex</strong> to spot bad addresses or offsets quickly.</p>
+      <input type="text" id="debug-search" placeholder="Filter by table name..." class="debug-search-input" />
+      <pre id="debug-output"></pre>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="ai-context-modal" style="display:none">
+  <div class="modal modal--wide">
+    <div class="modal-header">
+      <span>AI Tuning Context Prompt</span>
+      <button class="modal-close" id="ai-context-close">x</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Paste this at the start of a chat with a tuning-capable model so it understands the structure produced by <strong>Copy for AI</strong>.</p>
+      <button class="btn btn-primary btn-sm" id="btn-copy-ai-context" style="margin-bottom:12px">Copy Prompt</button>
+      <pre id="ai-context-text" class="ai-context-pre"></pre>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="copy-toast">Copied to clipboard!</div>
+
+<script src="/static/app.js?v=20260311e"></script>
+</body>
+</html>

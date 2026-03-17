@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python -c \"import flask; print\\(flask.__version__\\)\")",
+      "Bash(python -m flask --version)",
+      "Bash(where python:*)",
+      "Read(//c/Python314/Lib/site-packages/flask/**)",
+      "Bash(py -c \"import flask; print\\(''flask ok'', flask.__version__\\)\")"
+    ]
+  }
+}

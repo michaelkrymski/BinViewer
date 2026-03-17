@@ -1,0 +1,27 @@
+{
+  "Timing (Main)": {
+    "short": "Primary ignition advance table used under normal high-load operation.",
+    "long": "This family controls the base spark target before knock, temperature, and compensations are applied. Higher values generally increase torque until you hit knock or thermal limits.",
+    "aliases": [
+      "Timing (Main) (Map 2)",
+      "Timing (Main) (Map 3)",
+      "Timing (Main) (Map 4)"
+    ],
+    "bucket": "Ignition"
+  },
+  "Fuel Scalar": {
+    "short": "Global fuel mass scaling for the selected map.",
+    "long": "Use this to bias fueling richer or leaner across the entire map family before fine-tuning the individual main or spool fuel tables.",
+    "aliases": [
+      "Fuel Scalar (Map 2)",
+      "Fuel Scalar (Map 3)",
+      "Fuel Scalar (Map 4)"
+    ],
+    "bucket": "Fueling / Ethanol"
+  },
+  "Boost Ceiling (Relative) (Gear x RPM)": {
+    "short": "Gear-by-RPM relative boost ceiling used to limit boost request by operating condition.",
+    "long": "This family acts as a safety and drivability limiter. It is often one of the first places to inspect when requested boost does not match the target or when a map is gear-limited.",
+    "bucket": "Boost / WGDC"
+  }
+}
