@@ -23,13 +23,15 @@
 - Fixed CLI edit math to respect XDF `decimalpl` behavior like TunerPro, while limiting display-precision rounding to the edited region only.
 - Fixed axis writeback to preserve untouched breakpoint raw bytes and verify only the indices that were actually edited.
 - Validated `interpolate-y`, `interpolate-xy`, and direct X/Y axis edits against manual TunerPro results, isolating and resolving the remaining axis serialization mismatch.
+- Fixed CLI session replay/export so session files containing `axis_x_set` and `axis_y_set` edits can round-trip cleanly through `tuner_cli.py`.
+- Fixed the same-session parallel CLI race by adding session-file locking and atomic session saves, preventing last-writer-wins overwrites.
 
 ## In Progress
 - WIP: Final live browser pass against the Flask app once run under the interpreter/environment that has Flask available.
 
 ## Next Up
 - Run the Flask app in the user's normal environment and sanity-check selection, preview, apply, undo/reset, and export in-browser.
-- Teach session-file replay and CLI export flows to understand `axis_x_set` / `axis_y_set` without needing a direct shared-core export workaround.
+- Consider adding a first-class CLI command for axis edits instead of relying only on the shared editor core or the web API.
 - Consider adding row/column header selection shortcuts and richer preview overlays if the basic editor UX feels solid.
 
 ## Blockers / Questions
@@ -50,3 +52,5 @@
 - 2026-04-08: Cumulative validation on top of the earlier gold-case set showed `interpolate-y`, `interpolate-xy`, and requested WGDC Base axis edits matched TunerPro at the targeted cells/indices.
 - 2026-04-08: Isolated axis-only comparison against `Stock_TestCLI_CLIManual2.bin` exposed untouched breakpoint drift; fixed by writing only changed axis indices and preserving untouched raw axis bytes.
 - 2026-04-08: Corrected isolated axis-only export matched manual WGDC Base breakpoint values end-to-end, confirming the axis serialization fix.
+- 2026-04-08: `tuner_cli.py export` verified successfully for a session file containing axis edits after teaching session replay to handle `axis_x_set` / `axis_y_set`.
+- 2026-04-08: Same-session parallel CLI mutation test preserved both edits after adding a session lock and atomic save path, confirming the last-writer-wins race was fixed.

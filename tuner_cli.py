@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 from pathlib import Path
+import time
 
 from editor_core import EditSession, load_session_file, save_session_file
 
 
 DEFAULT_SESSION_PATH = Path('tuner_session.json')
+SESSION_LOCK_TIMEOUT_SECONDS = 30.0
+SESSION_LOCK_POLL_SECONDS = 0.1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -154,6 +159,31 @@ def load_required_session(path: str | Path) -> EditSession:
     return load_session_file(session_path)
 
 
+@contextlib.contextmanager
+def session_file_lock(path: str | Path, *, timeout_seconds: float = SESSION_LOCK_TIMEOUT_SECONDS):
+    """Serialize CLI mutations for one session file using a simple lockfile."""
+    session_path = Path(path)
+    lock_path = session_path.with_name(f'{session_path.name}.lock')
+    deadline = time.monotonic() + timeout_seconds
+    fd = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            os.write(fd, str(os.getpid()).encode('ascii', errors='ignore'))
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f'Timed out waiting for session lock: {lock_path}')
+            time.sleep(SESSION_LOCK_POLL_SECONDS)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        with contextlib.suppress(FileNotFoundError):
+            lock_path.unlink()
+
+
 def parse_selection(table: dict, rows_spec: str | None, cols_spec: str | None) -> dict:
     """Parse 1-based CLI ranges into 0-based editor selections."""
     row_start, row_end = parse_range(rows_spec, table['rows'])
@@ -247,15 +277,16 @@ def format_number(value) -> str:
 
 
 def command_parse(args) -> dict:
-    session = EditSession(
-        xdf_bytes=Path(args.xdf).read_bytes(),
-        bin_bytes=Path(args.bin).read_bytes(),
-        xdf_name=Path(args.xdf).name,
-        bin_name=Path(args.bin).name,
-        bin2_bytes=Path(args.bin2).read_bytes() if args.bin2 else None,
-        bin2_name=Path(args.bin2).name if args.bin2 else None,
-    )
-    session_path = save_session_file(session, args.session)
+    with session_file_lock(args.session):
+        session = EditSession(
+            xdf_bytes=Path(args.xdf).read_bytes(),
+            bin_bytes=Path(args.bin).read_bytes(),
+            xdf_name=Path(args.xdf).name,
+            bin_name=Path(args.bin).name,
+            bin2_bytes=Path(args.bin2).read_bytes() if args.bin2 else None,
+            bin2_name=Path(args.bin2).name if args.bin2 else None,
+        )
+        session_path = save_session_file(session, args.session)
     return {
         'session_path': str(session_path),
         'table_count': len(session.bindings),
@@ -291,39 +322,43 @@ def command_diff(args) -> dict:
 
 
 def command_apply(args) -> dict:
-    session = load_required_session(args.session)
-    table = session.get_table(args.table_id)
-    selection = parse_selection(table, args.rows, args.cols)
-    parameters = {}
-    if args.value is not None:
-        parameters['value'] = args.value
+    with session_file_lock(args.session):
+        session = load_required_session(args.session)
+        table = session.get_table(args.table_id)
+        selection = parse_selection(table, args.rows, args.cols)
+        parameters = {}
+        if args.value is not None:
+            parameters['value'] = args.value
 
-    if args.preview:
-        preview = session.preview_operation(args.table_id, args.operation, selection, parameters)
-        return {'preview': preview, 'session': session.get_summary()}
+        if args.preview:
+            preview = session.preview_operation(args.table_id, args.operation, selection, parameters)
+            return {'preview': preview, 'session': session.get_summary()}
 
-    result = session.apply_operation(args.table_id, args.operation, selection, parameters)
-    save_session_file(session, args.session)
-    return result
+        result = session.apply_operation(args.table_id, args.operation, selection, parameters)
+        save_session_file(session, args.session)
+        return result
 
 
 def command_undo(args) -> dict:
-    session = load_required_session(args.session)
-    payload = session.undo_last()
-    save_session_file(session, args.session)
-    return payload
+    with session_file_lock(args.session):
+        session = load_required_session(args.session)
+        payload = session.undo_last()
+        save_session_file(session, args.session)
+        return payload
 
 
 def command_reset(args) -> dict:
-    session = load_required_session(args.session)
-    session.reset_draft()
-    save_session_file(session, args.session)
-    return {'session': session.get_summary()}
+    with session_file_lock(args.session):
+        session = load_required_session(args.session)
+        session.reset_draft()
+        save_session_file(session, args.session)
+        return {'session': session.get_summary()}
 
 
 def command_export(args) -> dict:
-    session = load_required_session(args.session)
-    return session.export_bin_and_log(args.output_bin)
+    with session_file_lock(args.session):
+        session = load_required_session(args.session)
+        return session.export_bin_and_log(args.output_bin)
 
 
 def main() -> int:

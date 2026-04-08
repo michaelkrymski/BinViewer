@@ -9,6 +9,7 @@ from pathlib import Path
 import base64
 import json
 import math
+import os
 import re
 import uuid
 import zipfile
@@ -143,12 +144,21 @@ class EditSession:
         saved_edits = payload.get('pending_edits', [])
         if saved_edits:
             for edit in saved_edits:
-                session.apply_operation(
-                    edit['table_id'],
-                    edit['operation'],
-                    edit['selection'],
-                    edit.get('parameters') or {},
-                )
+                operation = edit.get('operation', '')
+                if operation in ('axis_x_set', 'axis_y_set'):
+                    axis_name = 'x' if operation == 'axis_x_set' else 'y'
+                    session.apply_axis_edit(
+                        edit['table_id'],
+                        axis_name,
+                        (edit.get('parameters') or {}).get('values') or [],
+                    )
+                else:
+                    session.apply_operation(
+                        edit['table_id'],
+                        operation,
+                        edit.get('selection'),
+                        edit.get('parameters') or {},
+                    )
             session.pending_edits = saved_edits
 
         working_bin_b64 = payload.get('working_bin_b64')
@@ -1053,7 +1063,9 @@ def sanitize_stem(value: str) -> str:
 def save_session_file(session: EditSession, path: str | Path) -> Path:
     """Write a session file to disk for CLI reuse."""
     path = Path(path)
-    path.write_text(json.dumps(session.to_payload(), indent=2), encoding='utf-8')
+    temp_path = path.with_name(f'{path.name}.tmp-{os.getpid()}')
+    temp_path.write_text(json.dumps(session.to_payload(), indent=2), encoding='utf-8')
+    os.replace(temp_path, path)
     return path
 
 
