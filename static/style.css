@@ -1552,6 +1552,13 @@ header {
   text-transform: uppercase;
 }
 
+.overview-pill__badge--inferred {
+  background: rgba(59, 130, 246, 0.16);
+  color: #bfdbfe;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
 .category-tabs {
   display: flex;
   gap: 0.55rem;
@@ -1685,6 +1692,16 @@ header {
   border-radius: 999px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.badge-inferred {
+  font-size: 0.62rem;
+  background: rgba(59, 130, 246, 0.14);
+  color: #93c5fd;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
   font-weight: 700;
 }
 

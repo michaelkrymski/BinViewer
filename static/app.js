@@ -636,8 +636,7 @@ function buildOverviewPill(table) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'overview-pill';
-  const globalBadge = isGlobalTable(table) ? '<span class="overview-pill__badge">Global</span>' : '';
-  button.innerHTML = `${globalBadge}<span>${escapeHtml(getDisplayTitle(table))}</span>`;
+  button.innerHTML = `${getOverviewMapBadge(table)}<span>${escapeHtml(getDisplayTitle(table))}</span>`;
   button.addEventListener('click', () => {
     state.selectedCategory = table.workflow_bucket || state.selectedCategory;
     selectTable(table.table_id);
@@ -653,6 +652,30 @@ function tableBelongsToMap(table, mapLabel) {
 
 function isGlobalTable(table) {
   return Boolean(table.is_shared_global);
+}
+
+function isInferredMapTable(table) {
+  return Boolean(table.map_inferred && getTableMapVariant(table));
+}
+
+function getMapStatusBadge(table) {
+  if (isGlobalTable(table)) {
+    return '<span class="badge-global">global</span>';
+  }
+  if (isInferredMapTable(table)) {
+    return `<span class="badge-inferred">${escapeHtml(getTableMapVariant(table))} (Inferred)</span>`;
+  }
+  return '';
+}
+
+function getOverviewMapBadge(table) {
+  if (isGlobalTable(table)) {
+    return '<span class="overview-pill__badge">Global</span>';
+  }
+  if (isInferredMapTable(table)) {
+    return `<span class="overview-pill__badge overview-pill__badge--inferred">${escapeHtml(getTableMapVariant(table))} (Inferred)</span>`;
+  }
+  return '';
 }
 
 function isGeneralMapSetting(table) {
@@ -919,7 +942,7 @@ function buildFamilySection(group) {
       </button>
       <span class="card-type-badge badge-family">family</span>
       <span class="family-title">${escapeHtml(group.familyTitle)}</span>
-      ${group.tables.some(isGlobalTable) ? '<span class="badge-global">global</span>' : ''}
+      ${group.tables.some(isGlobalTable) ? '<span class="badge-global">global</span>' : group.tables.some(isInferredMapTable) ? `<span class="badge-inferred">${escapeHtml(getTableMapVariant(group.tables.find(isInferredMapTable)))} (Inferred)</span>` : ''}
       <span class="family-count">${group.tables.length}</span>
     </div>
     <div class="family-body"></div>`;
@@ -1054,7 +1077,7 @@ function buildCard(table, { titleOverride = null } = {}) {
   const customTitle = getDisplayTitle(table);
   const displayTitle = customTitle !== table.title ? customTitle : (titleOverride || customTitle);
   const dirtyBadge = table.is_dirty ? '<span class="badge-draft">draft</span>' : '';
-  const globalBadge = isGlobalTable(table) ? '<span class="badge-global">global</span>' : '';
+  const mapStatusBadge = getMapStatusBadge(table);
 
   card.innerHTML = `
     <div class="card-header">
@@ -1065,7 +1088,7 @@ function buildCard(table, { titleOverride = null } = {}) {
       </button>
       <span class="card-type-badge ${badgeClass}">${badgeText}</span>
       <span class="card-title" title="${escapeHtml(customTitle)}">${escapeHtml(displayTitle)}</span>
-      ${globalBadge}
+      ${mapStatusBadge}
       ${table.low_priority_reason ? '<span class="badge-autogen">low priority</span>' : ''}
       ${table.is_autogen ? '<span class="badge-autogen">autogen</span>' : ''}
       ${dirtyBadge}
@@ -1128,7 +1151,7 @@ function renderInspector(visibleTables = []) {
   const badgeText = selected.error ? 'error' : selected.type === 'constant' ? 'scalar' : 'table';
   const units = selected.units ? `[${selected.units}]` : '';
   const dims = isScalarTable(selected) ? 'Scalar' : `${selected.rows}x${selected.cols}`;
-  const globalBadge = isGlobalTable(selected) ? '<span class="badge-global">global</span>' : '';
+  const mapStatusBadge = getMapStatusBadge(selected);
   const dirtyBadge = selected.is_dirty ? '<span class="badge-draft">draft</span>' : '';
   const variantMeta = selected.variant_label ? `<span>${escapeHtml(selected.variant_label)}</span>` : '';
   const categoryMeta = selected.workflow_bucket ? `<span>${escapeHtml(selected.workflow_bucket)}</span>` : '';
@@ -1138,7 +1161,7 @@ function renderInspector(visibleTables = []) {
     <div class="inspector-panel__title">
       <span class="card-type-badge ${badgeClass}">${badgeText}</span>
       <h3>${escapeHtml(getDisplayTitle(selected))}</h3>
-      ${globalBadge}
+      ${mapStatusBadge}
       ${dirtyBadge}
     </div>
     <div class="inspector-panel__meta">
