@@ -1,6 +1,7 @@
-'use strict';
+ï»¿'use strict';
 
 const WORKFLOW_BUCKET_ORDER = [
+  'Quick Start',
   'Boost / WGDC',
   'Fueling / Ethanol',
   'Ignition',
@@ -346,7 +347,7 @@ function renderResults() {
   resultsArea.style.display = '';
   editorToolbar.style.display = '';
   btnClear.style.display = '';
-  headerMeta.textContent = `${state.files.xdf?.name || ''} · ${state.files.bin?.name || ''} · ${state.tables.length} definitions`;
+  headerMeta.textContent = `${state.files.xdf?.name || ''} ï¿½ ${state.files.bin?.name || ''} ï¿½ ${state.tables.length} definitions`;
   viewModeSelect.value = state.viewMode;
   if (!state.selectedCategory) {
     state.selectedCategory = WORKFLOW_BUCKET_ORDER[0];
@@ -464,7 +465,7 @@ function renderWorkflowView(tables) {
 function getWorkflowMaps(tables) {
   const numbers = new Set(
     tables
-      .map(table => extractVariantNumber(table.map_variant))
+      .map(table => extractVariantNumber(getTableMapVariant(table)))
       .filter(value => Number.isFinite(value) && value > 0 && value <= 4),
   );
 
@@ -556,7 +557,11 @@ function renderWorkflowOverview(mapTables, categories) {
     .sort(compareTables)
     .slice(0, 5);
   const hotTables = mapTables
-    .filter(table => !table.low_priority_reason)
+    .filter(table => !table.low_priority_reason && (table.workflow_bucket || 'Other') !== 'Quick Start')
+    .sort(compareTables)
+    .slice(0, 6);
+  const quickStartTables = mapTables
+    .filter(table => (table.workflow_bucket || 'Other') === 'Quick Start')
     .sort(compareTables)
     .slice(0, 6);
 
@@ -585,6 +590,21 @@ function renderWorkflowOverview(mapTables, categories) {
       <div class="overview-pills overview-pills--general"></div>
     </div>
     <div class="overview-card">
+      <div class="overview-card__eyebrow">Quick Start</div>
+      <div class="overview-card__title">Starter tables for a fresh map revision</div>
+      <div class="overview-summary">
+        <div class="overview-stat">
+          <span class="overview-stat__value">${quickStartTables.length}</span>
+          <span class="overview-stat__label">Pinned Tables</span>
+        </div>
+        <div class="overview-stat">
+          <span class="overview-stat__value">${categories.find(category => category.bucket === 'Quick Start')?.tables.length || 0}</span>
+          <span class="overview-stat__label">Quick Start Rows</span>
+        </div>
+      </div>
+      <div class="overview-pills overview-pills--quick-start"></div>
+    </div>
+    <div class="overview-card">
       <div class="overview-card__eyebrow">Hot Tables</div>
       <div class="overview-card__title">Most useful for this map right now</div>
       <div class="overview-summary">
@@ -598,10 +618,14 @@ function renderWorkflowOverview(mapTables, categories) {
     </div>`;
 
   const generalWrap = workspaceOverview.querySelector('.overview-pills--general');
+  const quickStartWrap = workspaceOverview.querySelector('.overview-pills--quick-start');
   const hotWrap = workspaceOverview.querySelector('.overview-pills--hot');
 
   (generalTables.length ? generalTables : hotTables.slice(0, 4)).forEach(table => {
     generalWrap.appendChild(buildOverviewPill(table));
+  });
+  quickStartTables.forEach(table => {
+    quickStartWrap.appendChild(buildOverviewPill(table));
   });
   hotTables.forEach(table => {
     hotWrap.appendChild(buildOverviewPill(table));
@@ -623,12 +647,12 @@ function buildOverviewPill(table) {
 
 function tableBelongsToMap(table, mapLabel) {
   const mapNumber = extractVariantNumber(mapLabel);
-  const tableMapNumber = extractVariantNumber(table.map_variant);
+  const tableMapNumber = extractVariantNumber(getTableMapVariant(table));
   return tableMapNumber === mapNumber || isGlobalTable(table);
 }
 
 function isGlobalTable(table) {
-  return !table.map_variant;
+  return Boolean(table.is_shared_global);
 }
 
 function isGeneralMapSetting(table) {
@@ -641,10 +665,15 @@ function isGeneralMapSetting(table) {
 
 function shortBucketLabel(bucket) {
   return String(bucket)
+    .replace('Quick Start', 'Quick Start')
     .replace(' / WGDC', '')
     .replace(' / Ethanol', '')
     .replace(' / Limits', '')
     .replace(' / Fuel System', '');
+}
+
+function getTableMapVariant(table) {
+  return table.effective_map_variant || table.map_variant || null;
 }
 
 function ensureSelectedTable(tables) {
@@ -686,7 +715,7 @@ function updateDraftToolbar() {
 
   if (!session) {
     draftBadge.textContent = 'Draft Unloaded';
-    draftMeta.textContent = '0 pending edits · 0 dirty tables';
+    draftMeta.textContent = '0 pending edits ï¿½ 0 dirty tables';
     btnUndoDraft.disabled = true;
     btnResetDraft.disabled = true;
     btnExportDraft.disabled = true;
@@ -1134,7 +1163,7 @@ function renderInspector(visibleTables = []) {
     ? `<div class="desc-short">Family: ${escapeHtml(selected.family_title)}</div>`
     : '';
   const categoryPath = (selected.primary_category_path || []).length
-    ? `<div class="desc-long">${escapeHtml((selected.primary_category_path || []).join(' › '))}</div>`
+    ? `<div class="desc-long">${escapeHtml((selected.primary_category_path || []).join(' ï¿½ '))}</div>`
     : '';
 
   inspectorBody.innerHTML = `
@@ -1200,7 +1229,7 @@ function buildEditorPanel(table) {
   const showValue = !String(formState.operation).startsWith('interpolate');
   const previewSummary = preview ? `
     <div class="editor-preview-copy">
-      ${preview.summary.changed_cell_count} cells · delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
+      ${preview.summary.changed_cell_count} cells ï¿½ delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
     </div>
     ${(preview.changes || []).slice(0, 6).map(change => `
       <div class="editor-preview-line">
@@ -1368,7 +1397,7 @@ function formatSelectionLabel(selection, table) {
   if (!selection) {
     return 'Selection: none';
   }
-  return `Selection: R${selection.row_start + 1}-${selection.row_end + 1} · C${selection.col_start + 1}-${selection.col_end + 1} of ${table.rows}x${table.cols}`;
+  return `Selection: R${selection.row_start + 1}-${selection.row_end + 1} ï¿½ C${selection.col_start + 1}-${selection.col_end + 1} of ${table.rows}x${table.cols}`;
 }
 
 function buildPreviewLookup(tableId) {
@@ -1952,6 +1981,7 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
 
 
 
