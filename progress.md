@@ -21,13 +21,15 @@
 - Validated CLI writeback against manual TunerPro edits using `Stock_TestCLI.bin` / `Stock_TestCLIManual.bin`, ending with an exact binary match for scalar `set`, table `add`, table `multiply`, and `interpolate-x`.
 - Fixed integer-table writeback verification to use representable-value tolerance instead of a one-size-fits-all epsilon.
 - Fixed CLI edit math to respect XDF `decimalpl` behavior like TunerPro, while limiting display-precision rounding to the edited region only.
+- Fixed axis writeback to preserve untouched breakpoint raw bytes and verify only the indices that were actually edited.
+- Validated `interpolate-y`, `interpolate-xy`, and direct X/Y axis edits against manual TunerPro results, isolating and resolving the remaining axis serialization mismatch.
 
 ## In Progress
 - WIP: Final live browser pass against the Flask app once run under the interpreter/environment that has Flask available.
 
 ## Next Up
 - Run the Flask app in the user's normal environment and sanity-check selection, preview, apply, undo/reset, and export in-browser.
-- Add the next gold-case validation slice, likely `interpolate-y`, `interpolate-xy`, or additional axis-edit coverage.
+- Teach session-file replay and CLI export flows to understand `axis_x_set` / `axis_y_set` without needing a direct shared-core export workaround.
 - Consider adding row/column header selection shortcuts and richer preview overlays if the basic editor UX feels solid.
 
 ## Blockers / Questions
@@ -45,3 +47,6 @@
 - 2026-03-17: Heatmap and stronger selection visuals added in the web renderer; `node --check static/app.js` still passed afterward.
 - 2026-04-08: Reproduced and fixed a `WGDC P-Factor` CLI writeback mismatch by switching round-trip verification to storage-aware tolerance and honoring XDF `decimalpl` during edited-region math.
 - 2026-04-08: Final comparison between `Stock_TestCLIManual.bin` and `Stock_TestCLI_CLI_v4.bin` returned `diff_count 0`, validating scalar `set`, table `add`, table `multiply`, and `interpolate-x` against TunerPro.
+- 2026-04-08: Cumulative validation on top of the earlier gold-case set showed `interpolate-y`, `interpolate-xy`, and requested WGDC Base axis edits matched TunerPro at the targeted cells/indices.
+- 2026-04-08: Isolated axis-only comparison against `Stock_TestCLI_CLIManual2.bin` exposed untouched breakpoint drift; fixed by writing only changed axis indices and preserving untouched raw axis bytes.
+- 2026-04-08: Corrected isolated axis-only export matched manual WGDC Base breakpoint values end-to-end, confirming the axis serialization fix.

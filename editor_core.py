@@ -283,9 +283,6 @@ class EditSession:
             'dirty_table_ids': set(self.dirty_table_ids),
         })
 
-        write_axis_values_to_bin(self.working_bin, binding.table_def, normalized_axis, values)
-        self._refresh_table(table_id)
-
         changes = [
             {
                 'index': index,
@@ -296,6 +293,17 @@ class EditSession:
             for index in range(len(values))
             if not values_close(current_values[index], values[index])
         ]
+        changed_indices = [change['index'] for change in changes]
+
+        write_axis_values_to_bin(
+            self.working_bin,
+            binding.table_def,
+            normalized_axis,
+            values,
+            changed_indices=changed_indices,
+        )
+        self._refresh_table(table_id)
+
         edit_record = {
             'timestamp': datetime.now().isoformat(timespec='seconds'),
             'table_id': table_id,
@@ -679,7 +687,8 @@ def drop_preview_grid(preview: dict) -> dict:
     return result
 
 
-def write_axis_values_to_bin(bin_buffer: bytearray, table_def: dict, axis_name: str, scaled_values: list[float]) -> None:
+def write_axis_values_to_bin(bin_buffer: bytearray, table_def: dict, axis_name: str,
+                             scaled_values: list[float], *, changed_indices: list[int] | None = None) -> None:
     """Write scaled X or Y axis breakpoint values back into the BIN."""
     normalized_axis = normalize_axis_name(axis_name)
     axis = table_def.get(f'{normalized_axis}_axis')
@@ -704,8 +713,10 @@ def write_axis_values_to_bin(bin_buffer: bytearray, table_def: dict, axis_name: 
     default_le = table_def.get('default_lsbfirst', False)
     default_signed = table_def.get('default_signed', False)
     equation = layout['math'] or 'X'
+    indices = list(range(len(scaled_values))) if changed_indices is None else sorted(set(changed_indices))
 
-    for index, target_value in enumerate(scaled_values):
+    for index in indices:
+        target_value = scaled_values[index]
         row_index = 0 if normalized_axis == 'x' else index
         col_index = index if normalized_axis == 'x' else 0
         raw_value = solve_raw_value(
@@ -732,8 +743,12 @@ def write_axis_values_to_bin(bin_buffer: bytearray, table_def: dict, axis_name: 
 
     verified = extract_table(bytes(bin_buffer), table_def)
     verified_values = verified['x_labels'] if normalized_axis == 'x' else verified['y_labels']
-    if not axis_values_roundtrip_close(verified_values, scaled_values):
-        raise ValueError(f'Round-trip verification failed for {normalized_axis.upper()} axis on {table_def.get("title", "")}')
+    indices_to_check = range(len(scaled_values)) if changed_indices is None else indices
+    for index in indices_to_check:
+        if not axis_values_roundtrip_close([verified_values[index]], [scaled_values[index]]):
+            raise ValueError(
+                f'Round-trip verification failed for {normalized_axis.upper()} axis index {index} on {table_def.get("title", "")}'
+            )
 
 
 def write_grid_to_bin(bin_buffer: bytearray, table_def: dict, scaled_grid: list[list[float]]) -> None:
