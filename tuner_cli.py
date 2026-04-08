@@ -55,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument('--cols', help='1-based inclusive column selection, e.g. 3:8')
     apply_parser.add_argument('--preview', action='store_true', help='Preview only; do not mutate the session')
 
+    axis_parser = subparsers.add_parser('axis', help='Preview or apply direct X/Y breakpoint edits')
+    axis_parser.add_argument('table_id', help='Stable table_id from list output')
+    axis_parser.add_argument('axis', help='Axis name: x or y')
+    axis_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
+    axis_parser.add_argument(
+        '--values',
+        required=True,
+        help='Comma-separated full axis values, e.g. 8.33,33.44,55,75,...',
+    )
+    axis_parser.add_argument('--preview', action='store_true', help='Preview only; do not mutate the session')
+
     undo_parser = subparsers.add_parser('undo', help='Undo the most recent applied edit')
     undo_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
 
@@ -82,6 +93,7 @@ def emit(args, payload) -> int:
         print('  show    Print one table in a copy-for-AI style grid')
         print('  diff    Show pending edits and dirty tables')
         print('  apply   Preview or apply bounded edit operations')
+        print('  axis    Preview or apply direct X/Y breakpoint edits')
         print('  undo    Undo the latest applied edit')
         print('  reset   Reset the draft to the original BIN')
         print('  export  Write the edited BIN plus companion change log')
@@ -124,6 +136,17 @@ def emit(args, payload) -> int:
         summary = preview['summary']
         print(
             f"{preview['table_id']} {preview['operation']} | "
+            f"changed={summary['changed_cell_count']} "
+            f"delta=[{summary['min_delta']}, {summary['max_delta']}]"
+        )
+        if not args.preview:
+            print(f"pending edits: {payload['session']['pending_change_count']}")
+        return 0
+
+    if command == 'axis':
+        summary = payload['summary']
+        print(
+            f"{payload['table_id']} axis-{payload['axis']} | "
             f"changed={summary['changed_cell_count']} "
             f"delta=[{summary['min_delta']}, {summary['max_delta']}]"
         )
@@ -209,6 +232,19 @@ def parse_range(spec: str | None, limit: int) -> tuple[int, int]:
     start = max(int(start_text), 1)
     end = max(int(end_text), 1)
     return (min(start, end) - 1, max(start, end) - 1)
+
+
+def parse_axis_values(spec: str) -> list[float]:
+    """Parse a comma-separated list of numeric axis values."""
+    parts = [part.strip() for part in str(spec or '').split(',')]
+    values = []
+    for part in parts:
+        if not part:
+            continue
+        values.append(float(part))
+    if not values:
+        raise ValueError('Axis edits require at least one numeric value')
+    return values
 
 
 def format_table(table: dict) -> str:
@@ -339,6 +375,56 @@ def command_apply(args) -> dict:
         return result
 
 
+def command_axis(args) -> dict:
+    values = parse_axis_values(args.values)
+    with session_file_lock(args.session):
+        session = load_required_session(args.session)
+        table = session.get_table(args.table_id)
+        axis_name = str(args.axis or '').strip().lower()
+        current_values = table['x_labels'] if axis_name == 'x' else table['y_labels'] if axis_name == 'y' else None
+        if current_values is None:
+            raise ValueError('Axis must be x or y')
+        if len(values) != len(current_values):
+            raise ValueError(f'{axis_name.upper()} axis expects {len(current_values)} values, got {len(values)}')
+
+        changes = [
+            {
+                'index': index,
+                'before': current_values[index],
+                'after': values[index],
+                'delta': values[index] - current_values[index],
+            }
+            for index in range(len(values))
+            if abs(float(values[index]) - float(current_values[index])) > 1e-9
+        ]
+        summary = {
+            'changed_cell_count': len(changes),
+            'min_delta': min((change['delta'] for change in changes), default=0.0),
+            'max_delta': max((change['delta'] for change in changes), default=0.0),
+        }
+
+        if args.preview:
+            return {
+                'table_id': args.table_id,
+                'axis': axis_name,
+                'changes': changes[:160],
+                'changes_truncated': len(changes) > 160,
+                'summary': summary,
+                'session': session.get_summary(),
+            }
+
+        result = session.apply_axis_edit(args.table_id, axis_name, values)
+        save_session_file(session, args.session)
+        return {
+            'table_id': args.table_id,
+            'axis': axis_name,
+            'changes': result.get('changes', []),
+            'changes_truncated': result.get('changes_truncated', False),
+            'summary': result['pending_edits'][-1]['summary'] if result.get('pending_edits') else summary,
+            'session': result['session'],
+        }
+
+
 def command_undo(args) -> dict:
     with session_file_lock(args.session):
         session = load_required_session(args.session)
@@ -378,6 +464,8 @@ def main() -> int:
             payload = command_diff(args)
         elif args.command == 'apply':
             payload = command_apply(args)
+        elif args.command == 'axis':
+            payload = command_axis(args)
         elif args.command == 'undo':
             payload = command_undo(args)
         elif args.command == 'reset':

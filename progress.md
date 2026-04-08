@@ -24,7 +24,7 @@
 - Fixed axis writeback to preserve untouched breakpoint raw bytes and verify only the indices that were actually edited.
 - Validated `interpolate-y`, `interpolate-xy`, and direct X/Y axis edits against manual TunerPro results, isolating and resolving the remaining axis serialization mismatch.
 - Fixed CLI session replay/export so session files containing `axis_x_set` and `axis_y_set` edits can round-trip cleanly through `tuner_cli.py`.
-- Fixed the same-session parallel CLI race by adding session-file locking and atomic session saves, preventing last-writer-wins overwrites.
+- Fixed the same-session parallel CLI race by adding session-file locking and atomic session saves, preventing last-writer-wins overwrites.`r`n- Added a first-class `axis` CLI command so agents can preview and apply full X/Y breakpoint edits directly from `tuner_cli.py` without relying on shared-core helper scripts.
 
 ## In Progress
 - WIP: Final live browser pass against the Flask app once run under the interpreter/environment that has Flask available.
@@ -53,4 +53,5 @@
 - 2026-04-08: Isolated axis-only comparison against `Stock_TestCLI_CLIManual2.bin` exposed untouched breakpoint drift; fixed by writing only changed axis indices and preserving untouched raw axis bytes.
 - 2026-04-08: Corrected isolated axis-only export matched manual WGDC Base breakpoint values end-to-end, confirming the axis serialization fix.
 - 2026-04-08: `tuner_cli.py export` verified successfully for a session file containing axis edits after teaching session replay to handle `axis_x_set` / `axis_y_set`.
-- 2026-04-08: Same-session parallel CLI mutation test preserved both edits after adding a session lock and atomic save path, confirming the last-writer-wins race was fixed.
+- 2026-04-08: Same-session parallel CLI mutation test preserved both edits after adding a session lock and atomic save path, confirming the last-writer-wins race was fixed.`r`n- 2026-04-08: `tuner_cli.py axis` preview/apply verified end-to-end for `WGDC Base` X-axis edits, with the resulting session diff showing a persisted `axis_x_set` operation.
+
