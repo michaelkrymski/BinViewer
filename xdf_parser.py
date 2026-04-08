@@ -76,6 +76,7 @@ def _parse_axis(axis_elem):
         'units':         axis_elem.findtext('units', '').strip(),
         'index_count':   _parse_int(axis_elem.findtext('indexcount', '1')),
         'label':         axis_elem.findtext('label', '').strip(),
+        'decimal_places': _parse_int(axis_elem.findtext('decimalpl', '-1')),
     }
 
 

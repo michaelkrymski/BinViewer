@@ -12,6 +12,8 @@ const WORKFLOW_BUCKET_ORDER = [
   'Low Priority',
 ];
 
+const METADATA_STORAGE_KEY = 'tunerpro-viewer.metadata-overrides.v1';
+
 const state = {
   files: { xdf: null, bin: null, bin2: null },
   tables: [],
@@ -20,6 +22,14 @@ const state = {
   hasDiff: false,
   viewMode: 'workflow',
   hideAutogen: true,
+  session: null,
+  selections: {},
+  previews: {},
+  editorForms: {},
+  axisDrafts: {},
+  metadataOverrides: loadMetadataOverrides(),
+  editingMetadataTableId: null,
+  openState: { cards: new Set(), groups: new Set(), families: new Set() },
 };
 
 const AI_CONTEXT_PROMPT = `You are an expert automotive ECU tuning assistant. I will share ECU calibration data copied from TunerPro XDF Viewer.
@@ -59,6 +69,12 @@ const btnNewFiles = $('btn-new-files');
 const btnAiContext = $('btn-ai-context');
 const btnCopyAiContext = $('btn-copy-ai-context');
 const viewModeSelect = $('view-mode');
+const editorToolbar = $('editor-toolbar');
+const draftBadge = $('draft-badge');
+const draftMeta = $('draft-meta');
+const btnUndoDraft = $('btn-undo-draft');
+const btnResetDraft = $('btn-reset-draft');
+const btnExportDraft = $('btn-export-draft');
 const toast = $('copy-toast');
 const headerMeta = $('header-meta');
 const debugModal = $('debug-modal');
@@ -66,8 +82,15 @@ const debugOutput = $('debug-output');
 const debugSearch = $('debug-search');
 const aiContextModal = $('ai-context-modal');
 const aiContextText = $('ai-context-text');
+const metadataModal = $('metadata-modal');
+const metadataTitleInput = $('metadata-title');
+const metadataShortInput = $('metadata-short');
+const metadataLongInput = $('metadata-long');
+const btnMetadataSave = $('metadata-save');
+const btnMetadataReset = $('metadata-reset');
 
 let debugTables = [];
+let dragSelection = null;
 
 init();
 
@@ -77,8 +100,10 @@ function init() {
   wireModals();
   updateParseBtn();
   syncHideAutogenButton();
+  updateDraftToolbar();
   aiContextText.textContent = AI_CONTEXT_PROMPT;
   viewModeSelect.value = state.viewMode;
+  window.addEventListener('mouseup', () => { dragSelection = null; });
 }
 
 function wireDropZones() {
@@ -155,11 +180,16 @@ function wireToolbar() {
   });
 
   btnCopyAiContext.addEventListener('click', () => copyText(AI_CONTEXT_PROMPT));
+
+  btnUndoDraft.addEventListener('click', undoDraft);
+  btnResetDraft.addEventListener('click', resetDraft);
+  btnExportDraft.addEventListener('click', exportDraft);
 }
 
 function wireModals() {
   $('debug-close').addEventListener('click', () => { debugModal.style.display = 'none'; });
   $('ai-context-close').addEventListener('click', () => { aiContextModal.style.display = 'none'; });
+  $('metadata-close').addEventListener('click', closeMetadataModal);
 
   debugModal.addEventListener('click', event => {
     if (event.target === debugModal) {
@@ -172,6 +202,15 @@ function wireModals() {
       aiContextModal.style.display = 'none';
     }
   });
+
+  metadataModal.addEventListener('click', event => {
+    if (event.target === metadataModal) {
+      closeMetadataModal();
+    }
+  });
+
+  btnMetadataSave.addEventListener('click', saveMetadataOverride);
+  btnMetadataReset.addEventListener('click', clearMetadataOverride);
 
   debugSearch.addEventListener('input', () => renderDebugOutput(debugTables));
 }
@@ -225,6 +264,11 @@ async function doParse() {
     state.tables = data.tables || [];
     state.categories = data.categories || {};
     state.hasDiff = state.tables.some(table => table.has_diff);
+    state.session = data.session || null;
+    state.selections = {};
+    state.previews = {};
+    state.editorForms = {};
+    state.axisDrafts = {};
 
     setTimeout(() => {
       showProgress(false);
@@ -287,13 +331,16 @@ function renderDebugOutput(tables) {
 function renderResults() {
   uploadPanel.style.display = 'none';
   resultsArea.style.display = '';
+  editorToolbar.style.display = '';
   btnClear.style.display = '';
   headerMeta.textContent = `${state.files.xdf?.name || ''} · ${state.files.bin?.name || ''} · ${state.tables.length} definitions`;
   viewModeSelect.value = state.viewMode;
+  updateDraftToolbar();
   renderList();
 }
 
 function renderList() {
+  state.openState = snapshotOpenState();
   const visibleState = getVisibleState();
   const visible = visibleState.visible;
   countBadge.textContent = buildCountLabel(visible.length, state.tables.length, visibleState.reasons);
@@ -333,11 +380,11 @@ function getVisibleState() {
     const before = visible.length;
     const query = state.search.toLowerCase();
     visible = visible.filter(table => {
-      return table.title.toLowerCase().includes(query)
+      return getDisplayTitle(table).toLowerCase().includes(query)
         || String(table.family_title || '').toLowerCase().includes(query)
         || String(table.variant_label || '').toLowerCase().includes(query)
-        || String(table.description_short || '').toLowerCase().includes(query)
-        || String(table.description_long || '').toLowerCase().includes(query)
+        || String(getDisplayShortDescription(table) || '').toLowerCase().includes(query)
+        || String(getDisplayLongDescription(table) || '').toLowerCase().includes(query)
         || String(table.workflow_bucket || '').toLowerCase().includes(query)
         || (table.primary_category_path || []).join(' ').toLowerCase().includes(query);
     });
@@ -352,6 +399,88 @@ function getVisibleState() {
 function buildCountLabel(visibleCount, totalCount, reasons) {
   const base = `${visibleCount} / ${totalCount} shown`;
   return reasons.length ? `${base} - ${reasons.join(' + ')}` : base;
+}
+
+function updateDraftToolbar() {
+  const session = state.session;
+  const pending = Number(session?.pending_change_count || 0);
+  const dirty = Number(session?.dirty_table_count || 0);
+  const exportReady = Boolean(session?.export_ready);
+
+  if (!session) {
+    draftBadge.textContent = 'Draft Unloaded';
+    draftMeta.textContent = '0 pending edits · 0 dirty tables';
+    btnUndoDraft.disabled = true;
+    btnResetDraft.disabled = true;
+    btnExportDraft.disabled = true;
+    return;
+  }
+
+  draftBadge.textContent = exportReady ? 'Draft Dirty' : 'Draft Clean';
+  draftBadge.classList.toggle('is-dirty', exportReady);
+  draftMeta.textContent = `${pending} pending edits · ${dirty} dirty tables`;
+  btnUndoDraft.disabled = pending === 0;
+  btnResetDraft.disabled = pending === 0;
+  btnExportDraft.disabled = !exportReady;
+}
+
+function snapshotOpenState() {
+  return {
+    cards: new Set(Array.from(document.querySelectorAll('.table-card.open')).map(node => node.dataset.tableId)),
+    groups: new Set(Array.from(document.querySelectorAll('.group-section.open')).map(node => node.dataset.groupKey)),
+    families: new Set(Array.from(document.querySelectorAll('.family-section.open')).map(node => node.dataset.familyKey)),
+  };
+}
+
+function shouldOpen(kind, key, defaultOpen) {
+  const bucket = state.openState?.[kind];
+  if (bucket && bucket.has(String(key))) {
+    return true;
+  }
+  return defaultOpen;
+}
+
+function getMetadataKey(table) {
+  return `${state.session?.source_xdf_name || state.files.xdf?.name || 'xdf'}::${table.table_id}`;
+}
+
+function loadMetadataOverrides() {
+  try {
+    const raw = window.localStorage.getItem(METADATA_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function saveMetadataOverrides() {
+  window.localStorage.setItem(METADATA_STORAGE_KEY, JSON.stringify(state.metadataOverrides));
+}
+
+function getTableOverride(table) {
+  return state.metadataOverrides[getMetadataKey(table)] || {};
+}
+
+function getDisplayTitle(table) {
+  const override = getTableOverride(table);
+  return Object.prototype.hasOwnProperty.call(override, 'title') ? override.title : table.title;
+}
+
+function getDisplayShortDescription(table) {
+  const override = getTableOverride(table);
+  if (Object.prototype.hasOwnProperty.call(override, 'short')) {
+    return override.short;
+  }
+  return table.description_short || table.description || '';
+}
+
+function getDisplayLongDescription(table) {
+  const override = getTableOverride(table);
+  if (Object.prototype.hasOwnProperty.call(override, 'long')) {
+    return override.long;
+  }
+  return table.description_long || '';
 }
 
 function renderFlatView(tables) {
@@ -371,6 +500,7 @@ function renderWorkflowView(tables) {
   Array.from(groups.keys()).sort(compareBuckets).forEach(bucket => {
     const items = groups.get(bucket).slice().sort(compareTables);
     const section = buildGroupSection({
+      key: `workflow:${bucket}`,
       label: bucket,
       count: items.length,
       depth: 0,
@@ -392,7 +522,9 @@ function renderHierarchyView(tables) {
     let cursor = root;
     path.forEach(segment => {
       if (!cursor.children.has(segment)) {
-        cursor.children.set(segment, createNode(segment));
+        const child = createNode(segment);
+        child.path = [...cursor.path, segment];
+        cursor.children.set(segment, child);
       }
       cursor = cursor.children.get(segment);
     });
@@ -405,14 +537,21 @@ function renderHierarchyView(tables) {
 }
 
 function createNode(label) {
-  return { label, children: new Map(), tables: [] };
+  return { label, children: new Map(), tables: [], path: [] };
 }
 
 function renderHierarchyNode(node, depth) {
   const count = countNodeTables(node);
   const lowPriority = nodeIsLowPriority(node);
   const open = depth === 0 || (!lowPriority && count <= 14);
-  const section = buildGroupSection({ label: node.label, count, depth, open, lowPriority });
+  const section = buildGroupSection({
+    key: `hierarchy:${node.path.join('/') || node.label}`,
+    label: node.label,
+    count,
+    depth,
+    open,
+    lowPriority,
+  });
   const body = section.querySelector('.group-body');
 
   Array.from(node.children.values())
@@ -462,7 +601,9 @@ function shouldRenderAsFamily(group) {
 
 function buildFamilySection(group) {
   const section = document.createElement('section');
-  section.className = 'family-section';
+  const familyKey = `family:${group.familyTitle}`;
+  section.className = `family-section${shouldOpen('families', familyKey, false) ? ' open' : ''}`;
+  section.dataset.familyKey = familyKey;
   section.innerHTML = `
     <button class="family-header" type="button">
       <svg class="family-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -506,9 +647,10 @@ function appendFamilyDescription(container, representative, workflowHeader) {
   container.appendChild(block);
 }
 
-function buildGroupSection({ label, count, depth = 0, open = true, lowPriority = false }) {
+function buildGroupSection({ key, label, count, depth = 0, open = true, lowPriority = false }) {
   const section = document.createElement('section');
-  section.className = `group-section${open ? ' open' : ''}${lowPriority ? ' group-section--low' : ''}`;
+  section.className = `group-section${shouldOpen('groups', key, open) ? ' open' : ''}${lowPriority ? ' group-section--low' : ''}`;
+  section.dataset.groupKey = key;
   section.innerHTML = `
     <button class="group-header" type="button" style="--group-depth:${depth}">
       <span class="group-chevron">></span>
@@ -582,7 +724,9 @@ function findRepresentative(tables) {
 
 function buildCard(table, { titleOverride = null } = {}) {
   const card = document.createElement('article');
-  card.className = `table-card${table.error ? ' has-error' : ''}`;
+  const shouldBeOpen = shouldOpen('cards', table.table_id, Boolean(state.previews[table.table_id]));
+  card.className = `table-card${table.error ? ' has-error' : ''}${shouldBeOpen ? ' open' : ''}`;
+  card.dataset.tableId = table.table_id;
 
   const isScalar = table.type === 'constant' || (table.rows === 1 && table.cols === 1);
   const badgeClass = table.error ? 'badge-error' : table.type === 'constant' ? 'badge-constant' : 'badge-table';
@@ -590,7 +734,9 @@ function buildCard(table, { titleOverride = null } = {}) {
   const dims = isScalar ? '' : `${table.rows}x${table.cols}`;
   const units = table.units ? `[${table.units}]` : '';
   const changeBadge = table.change_count ? `<span class="card-metric" title="Logged edits">${table.change_count} edits</span>` : '';
-  const displayTitle = titleOverride || table.title;
+  const customTitle = getDisplayTitle(table);
+  const displayTitle = customTitle !== table.title ? customTitle : (titleOverride || customTitle);
+  const dirtyBadge = table.is_dirty ? '<span class="badge-draft">draft</span>' : '';
 
   card.innerHTML = `
     <div class="card-header">
@@ -598,9 +744,11 @@ function buildCard(table, { titleOverride = null } = {}) {
         <polyline points="9 18 15 12 9 6"/>
       </svg>
       <span class="card-type-badge ${badgeClass}">${badgeText}</span>
-      <span class="card-title" title="${escapeHtml(table.title)}">${escapeHtml(displayTitle)}</span>
+      <span class="card-title" title="${escapeHtml(customTitle)}">${escapeHtml(displayTitle)}</span>
+      <button class="card-edit-meta" type="button" title="Edit table name and descriptions">edit</button>
       ${table.low_priority_reason ? '<span class="badge-autogen">low priority</span>' : ''}
       ${table.is_autogen ? '<span class="badge-autogen">autogen</span>' : ''}
+      ${dirtyBadge}
       ${changeBadge}
       ${units ? `<span class="card-units">${escapeHtml(units)}</span>` : ''}
       ${dims ? `<span class="card-dims">${dims}</span>` : ''}
@@ -608,6 +756,7 @@ function buildCard(table, { titleOverride = null } = {}) {
     </div>
     <div class="card-body">
       ${buildDescriptionBlock(table)}
+      ${buildEditorPanel(table)}
       ${buildBody(table)}
     </div>`;
 
@@ -621,26 +770,78 @@ function buildCard(table, { titleOverride = null } = {}) {
     copyForAI(table);
   });
 
+  card.querySelector('.card-edit-meta').addEventListener('click', event => {
+    event.stopPropagation();
+    openMetadataModal(table.table_id);
+  });
+
+  if (table.editable && !table.error) {
+    wireEditableCard(card, table);
+  }
+
   return card;
 }
 
 function buildDescriptionBlock(table) {
-  const shortText = table.description_short || '';
-  const longText = table.description_long || '';
-  if (!shortText && !longText && !table.description) {
+  const shortText = getDisplayShortDescription(table);
+  const longText = getDisplayLongDescription(table);
+  if (!shortText && !longText) {
     return '';
   }
 
   const parts = [];
   if (shortText) {
     parts.push(`<div class="desc-short">${escapeHtml(shortText)}</div>`);
-  } else if (table.description) {
-    parts.push(`<div class="desc-short">${escapeHtml(table.description)}</div>`);
   }
   if (longText) {
     parts.push(`<div class="desc-long">${escapeHtml(longText)}</div>`);
   }
   return `<div class="card-desc">${parts.join('')}</div>`;
+}
+
+function buildEditorPanel(table) {
+  if (!table.editable || table.error) {
+    return '';
+  }
+
+  const selection = state.selections[table.table_id];
+  const preview = state.previews[table.table_id];
+  const formState = state.editorForms[table.table_id] || { operation: 'add_constant', value: 1 };
+  const showValue = !String(formState.operation).startsWith('interpolate');
+  const previewSummary = preview ? `
+    <div class="editor-preview-copy">
+      ${preview.summary.changed_cell_count} cells · delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
+    </div>
+    ${(preview.changes || []).slice(0, 6).map(change => `
+      <div class="editor-preview-line">
+        R${change.row + 1} C${change.col + 1}: ${formatNumber(change.before)} -> ${formatNumber(change.after)}
+      </div>`).join('')}
+    ${preview.changes_truncated ? '<div class="editor-preview-line">…more cells omitted</div>' : ''}
+  ` : '<div class="editor-preview-copy">Select a region, then preview or apply an operation.</div>';
+
+  return `
+    <div class="editor-panel" data-table-id="${escapeHtml(table.table_id)}">
+      <div class="editor-row">
+        <span class="selection-chip">${escapeHtml(formatSelectionLabel(selection, table))}</span>
+        <button class="editor-mini-btn" type="button" data-editor-action="select-all">Select All</button>
+        <button class="editor-mini-btn" type="button" data-editor-action="clear-selection">Clear</button>
+      </div>
+      <div class="editor-row">
+        <label class="editor-control">
+          <span>Operation</span>
+          <select class="editor-operation">
+            ${buildOperationOptions(formState.operation)}
+          </select>
+        </label>
+        <label class="editor-control editor-value-wrap"${showValue ? '' : ' style="display:none"'}>
+          <span>Value</span>
+          <input class="editor-value" type="number" step="any" value="${escapeHtml(String(formState.value ?? 1))}" />
+        </label>
+        <button class="btn btn-ghost btn-sm editor-preview-btn" type="button">Preview</button>
+        <button class="btn btn-primary btn-sm editor-apply-btn" type="button">Apply to Draft</button>
+      </div>
+      <div class="editor-preview">${previewSummary}</div>
+    </div>`;
 }
 
 function buildBody(table) {
@@ -650,10 +851,11 @@ function buildBody(table) {
   if (!table.rows) {
     return '<div class="card-error-msg">No data extracted.</div>';
   }
+  const axisEditors = buildAxisEditors(table);
   if (table.type === 'constant' || (table.rows === 1 && table.cols === 1)) {
-    return buildScalar(table);
+    return `${axisEditors}${buildScalar(table)}`;
   }
-  return buildTable(table);
+  return `${axisEditors}${buildTable(table)}`;
 }
 
 function buildScalar(table) {
@@ -669,6 +871,8 @@ function buildTable(table) {
   const { grid, grid2, x_labels: xLabels, y_labels: yLabels, rows, cols, has_diff: hasDiff } = table;
   const hasX = Array.isArray(xLabels) && xLabels.length > 0;
   const hasY = Array.isArray(yLabels) && yLabels.length > 0;
+  const selection = state.selections[table.table_id];
+  const previewLookup = buildPreviewLookup(table.table_id);
   let html = '<div class="table-scroll"><table class="data-table"><thead><tr>';
   html += `<th class="row-header">${hasY ? 'Y / X' : ''}</th>`;
 
@@ -684,15 +888,24 @@ function buildTable(table) {
     html += `<tr><td class="row-label">${escapeHtml(rowLabel)}</td>`;
     for (let col = 0; col < cols; col += 1) {
       const current = formatNumber((grid[row] || [])[col] ?? 0);
+      const cellClasses = ['table-cell'];
+      const heatmapStyle = buildHeatmapStyle(table, row, col);
+      if (selectionContains(selection, row, col)) {
+        cellClasses.push('is-selected');
+      }
+      if (previewLookup.has(`${row}:${col}`)) {
+        cellClasses.push('is-preview');
+      }
       if (hasDiff && grid2) {
         const other = formatNumber((grid2[row] || [])[col] ?? 0);
         if (current !== other) {
-          html += `<td class="diff-changed"><span class="v1">${escapeHtml(current)}</span><span class="v2">${escapeHtml(other)}</span></td>`;
+          cellClasses.push('diff-changed');
+          html += `<td class="${cellClasses.join(' ')}" data-row="${row}" data-col="${col}" style="${heatmapStyle}"><span class="v1">${escapeHtml(current)}</span><span class="v2">${escapeHtml(other)}</span></td>`;
         } else {
-          html += `<td>${escapeHtml(current)}</td>`;
+          html += `<td class="${cellClasses.join(' ')}" data-row="${row}" data-col="${col}" style="${heatmapStyle}">${escapeHtml(current)}</td>`;
         }
       } else {
-        html += `<td>${escapeHtml(current)}</td>`;
+        html += `<td class="${cellClasses.join(' ')}" data-row="${row}" data-col="${col}" style="${heatmapStyle}">${escapeHtml(current)}</td>`;
       }
     }
     html += '</tr>';
@@ -702,10 +915,472 @@ function buildTable(table) {
   return html;
 }
 
+function buildOperationOptions(selectedOperation) {
+  const options = [
+    ['set_cells', 'Set Cells'],
+    ['add_constant', 'Add Constant'],
+    ['multiply', 'Multiply'],
+    ['interpolate_x', 'Interpolate X'],
+    ['interpolate_y', 'Interpolate Y'],
+    ['interpolate_xy', 'Interpolate XY'],
+  ];
+  return options.map(([value, label]) => (
+    `<option value="${value}"${value === selectedOperation ? ' selected' : ''}>${label}</option>`
+  )).join('');
+}
+
+function buildAxisEditors(table) {
+  const xEditor = buildAxisEditor(table, 'x');
+  const yEditor = buildAxisEditor(table, 'y');
+  if (!xEditor && !yEditor) {
+    return '';
+  }
+  return `<div class="axis-editor-wrap">${xEditor}${yEditor}</div>`;
+}
+
+function buildAxisEditor(table, axisName) {
+  const editable = axisName === 'x' ? table.x_axis_editable : table.y_axis_editable;
+  const values = axisName === 'x' ? (table.x_labels || []) : (table.y_labels || []);
+  if (!editable || !values.length) {
+    return '';
+  }
+  const draftValues = getAxisDraft(table, axisName);
+  const axisLabel = axisName.toUpperCase();
+  return `
+    <div class="axis-editor" data-axis="${axisName}">
+      <div class="axis-editor__header">
+        <span class="axis-editor__title">${axisLabel} Axis Breakpoints</span>
+        <button class="editor-mini-btn" type="button" data-axis-action="reset" data-axis-name="${axisName}">Reset ${axisLabel}</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-axis-action="apply" data-axis-name="${axisName}">Apply ${axisLabel} Axis</button>
+      </div>
+      <div class="axis-editor__inputs">
+        ${draftValues.map((value, index) => `
+          <label class="axis-editor__item">
+            <span>${axisLabel}${index + 1}</span>
+            <input type="number" step="any" class="axis-input" data-axis-name="${axisName}" data-axis-index="${index}" value="${escapeHtml(String(value))}" />
+          </label>
+        `).join('')}
+      </div>
+    </div>`;
+}
+
+function getAxisDraft(table, axisName) {
+  if (!state.axisDrafts[table.table_id]) {
+    state.axisDrafts[table.table_id] = {};
+  }
+  if (!state.axisDrafts[table.table_id][axisName]) {
+    state.axisDrafts[table.table_id][axisName] = [...(axisName === 'x' ? (table.x_labels || []) : (table.y_labels || []))];
+  }
+  return state.axisDrafts[table.table_id][axisName];
+}
+
+function formatSelectionLabel(selection, table) {
+  if (!selection) {
+    return 'Selection: none';
+  }
+  return `Selection: R${selection.row_start + 1}-${selection.row_end + 1} · C${selection.col_start + 1}-${selection.col_end + 1} of ${table.rows}x${table.cols}`;
+}
+
+function buildPreviewLookup(tableId) {
+  const preview = state.previews[tableId];
+  const lookup = new Set();
+  if (!preview) {
+    return lookup;
+  }
+  (preview.changes || []).forEach(change => lookup.add(`${change.row}:${change.col}`));
+  return lookup;
+}
+
+function buildHeatmapStyle(table, row, col) {
+  const stats = getGridStats(table.grid || []);
+  if (!stats || stats.max <= stats.min) {
+    return '';
+  }
+  const value = Number((table.grid[row] || [])[col]);
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  const ratio = Math.max(0, Math.min(1, (value - stats.min) / (stats.max - stats.min)));
+  const hue = 120 - (ratio * 120);
+  const alpha = 0.2 + (ratio * 0.18);
+  return `background: linear-gradient(180deg, hsla(${hue}, 72%, 45%, ${alpha}) 0%, hsla(${hue}, 70%, 32%, ${alpha * 0.95}) 100%);`;
+}
+
+function getGridStats(grid) {
+  const values = [];
+  (grid || []).forEach(row => {
+    (row || []).forEach(value => {
+      if (Number.isFinite(Number(value))) {
+        values.push(Number(value));
+      }
+    });
+  });
+  if (!values.length) {
+    return null;
+  }
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+  };
+}
+
+function selectionContains(selection, row, col) {
+  if (!selection) {
+    return false;
+  }
+  return row >= selection.row_start
+    && row <= selection.row_end
+    && col >= selection.col_start
+    && col <= selection.col_end;
+}
+
+function wireEditableCard(card, table) {
+  const panel = card.querySelector('.editor-panel');
+  if (!panel) {
+    return;
+  }
+
+  const tableId = table.table_id;
+  const operationSelect = panel.querySelector('.editor-operation');
+  const valueWrap = panel.querySelector('.editor-value-wrap');
+  const valueInput = panel.querySelector('.editor-value');
+
+  const syncFormState = () => {
+    const value = valueInput ? valueInput.value : '';
+    state.editorForms[tableId] = {
+      operation: operationSelect.value,
+      value,
+    };
+    valueWrap.style.display = operationSelect.value.startsWith('interpolate') ? 'none' : '';
+  };
+
+  syncFormState();
+  operationSelect.addEventListener('change', syncFormState);
+  if (valueInput) {
+    valueInput.addEventListener('input', syncFormState);
+  }
+
+  card.querySelectorAll('.axis-input').forEach(input => {
+    input.addEventListener('input', event => {
+      const axisName = event.target.dataset.axisName;
+      const index = Number(event.target.dataset.axisIndex);
+      const values = [...getAxisDraft(table, axisName)];
+      values[index] = Number(event.target.value);
+      state.axisDrafts[tableId][axisName] = values;
+    });
+  });
+
+  card.querySelectorAll('[data-axis-action="reset"]').forEach(button => {
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      const axisName = button.dataset.axisName;
+      state.axisDrafts[tableId][axisName] = [...(axisName === 'x' ? (table.x_labels || []) : (table.y_labels || []))];
+      renderList();
+    });
+  });
+
+  card.querySelectorAll('[data-axis-action="apply"]').forEach(button => {
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      await applyAxisDraft(tableId, button.dataset.axisName);
+    });
+  });
+
+  panel.querySelector('[data-editor-action="select-all"]').addEventListener('click', event => {
+    event.stopPropagation();
+    state.selections[tableId] = {
+      row_start: 0,
+      row_end: Math.max(table.rows - 1, 0),
+      col_start: 0,
+      col_end: Math.max(table.cols - 1, 0),
+    };
+    delete state.previews[tableId];
+    refreshEditableCard(card, table);
+  });
+
+  panel.querySelector('[data-editor-action="clear-selection"]').addEventListener('click', event => {
+    event.stopPropagation();
+    delete state.selections[tableId];
+    delete state.previews[tableId];
+    refreshEditableCard(card, table);
+  });
+
+  panel.querySelector('.editor-preview-btn').addEventListener('click', async event => {
+    event.stopPropagation();
+    await runEditorAction(tableId, true);
+  });
+
+  panel.querySelector('.editor-apply-btn').addEventListener('click', async event => {
+    event.stopPropagation();
+    await runEditorAction(tableId, false);
+  });
+
+  card.querySelectorAll('.table-cell').forEach(cell => {
+    cell.addEventListener('mousedown', event => {
+      if (event.button !== 0) {
+        return;
+      }
+      const row = Number(cell.dataset.row);
+      const col = Number(cell.dataset.col);
+      dragSelection = { tableId, anchorRow: row, anchorCol: col };
+      state.selections[tableId] = { row_start: row, row_end: row, col_start: col, col_end: col };
+      delete state.previews[tableId];
+      refreshEditableCard(card, table);
+      event.preventDefault();
+    });
+
+    cell.addEventListener('mouseenter', () => {
+      if (!dragSelection || dragSelection.tableId !== tableId) {
+        return;
+      }
+      const row = Number(cell.dataset.row);
+      const col = Number(cell.dataset.col);
+      state.selections[tableId] = {
+        row_start: Math.min(dragSelection.anchorRow, row),
+        row_end: Math.max(dragSelection.anchorRow, row),
+        col_start: Math.min(dragSelection.anchorCol, col),
+        col_end: Math.max(dragSelection.anchorCol, col),
+      };
+      delete state.previews[tableId];
+      refreshEditableCard(card, table);
+    });
+  });
+}
+
+function refreshEditableCard(card, table) {
+  const selection = state.selections[table.table_id];
+  const previewLookup = buildPreviewLookup(table.table_id);
+  const selectionChip = card.querySelector('.selection-chip');
+  if (selectionChip) {
+    selectionChip.textContent = formatSelectionLabel(selection, table);
+  }
+  const previewBox = card.querySelector('.editor-preview');
+  if (previewBox && !state.previews[table.table_id]) {
+    previewBox.innerHTML = '<div class="editor-preview-copy">Select a region, then preview or apply an operation.</div>';
+  }
+  card.querySelectorAll('.table-cell').forEach(cell => {
+    const row = Number(cell.dataset.row);
+    const col = Number(cell.dataset.col);
+    cell.classList.toggle('is-selected', selectionContains(selection, row, col));
+    cell.classList.toggle('is-preview', previewLookup.has(`${row}:${col}`));
+  });
+}
+
+async function runEditorAction(tableId, previewOnly) {
+  if (!state.session?.session_id) {
+    showToast('No active editing session.');
+    return;
+  }
+  const selection = state.selections[tableId];
+  if (!selection) {
+    showToast('Select a table region first.');
+    return;
+  }
+
+  const formState = state.editorForms[tableId] || { operation: 'add_constant', value: 1 };
+  const payload = {
+    table_id: tableId,
+    operation: formState.operation,
+    selection,
+    parameters: {},
+  };
+  if (!String(formState.operation).startsWith('interpolate')) {
+    payload.parameters.value = Number(formState.value);
+  }
+
+  const endpoint = previewOnly ? 'preview' : 'apply';
+  const response = await fetch(`/api/session/${state.session.session_id}/${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Edit request failed.');
+    return;
+  }
+
+  if (previewOnly) {
+    state.previews[tableId] = data.preview;
+    renderList();
+    showToast('Preview ready.');
+    return;
+  }
+
+  state.session = data.session || state.session;
+  state.previews[tableId] = data.preview || null;
+  state.tables = state.tables.map(table => (table.table_id === tableId ? data.table : table));
+  updateDraftToolbar();
+  renderList();
+  showToast('Draft updated.');
+}
+
+async function applyAxisDraft(tableId, axisName) {
+  if (!state.session?.session_id) {
+    return;
+  }
+  const table = state.tables.find(item => item.table_id === tableId);
+  if (!table) {
+    showToast('Could not find the selected table.');
+    return;
+  }
+  const values = getAxisDraft(table, axisName).map(value => Number(value));
+  const response = await fetch(`/api/session/${state.session.session_id}/axis`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ table_id: tableId, axis: axisName, values }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || `Failed to apply ${String(axisName).toUpperCase()} axis.`);
+    return;
+  }
+
+  state.session = data.session || state.session;
+  state.tables = state.tables.map(table => (table.table_id === tableId ? data.table : table));
+  if (!state.axisDrafts[tableId]) {
+    state.axisDrafts[tableId] = {};
+  }
+  state.axisDrafts[tableId][axisName] = [...(axisName === 'x' ? (data.table.x_labels || []) : (data.table.y_labels || []))];
+  updateDraftToolbar();
+  renderList();
+  showToast(`${String(axisName).toUpperCase()} axis updated.`);
+}
+
+async function undoDraft() {
+  if (!state.session?.session_id) {
+    return;
+  }
+  const response = await fetch(`/api/session/${state.session.session_id}/undo`, { method: 'POST' });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Undo failed.');
+    return;
+  }
+  state.tables = data.tables || [];
+  state.categories = data.categories || state.categories;
+  state.session = data.session || null;
+  state.previews = {};
+  updateDraftToolbar();
+  renderList();
+  showToast('Undid the last draft edit.');
+}
+
+async function resetDraft() {
+  if (!state.session?.session_id) {
+    return;
+  }
+  const response = await fetch(`/api/session/${state.session.session_id}/reset`, { method: 'POST' });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Reset failed.');
+    return;
+  }
+  state.tables = data.tables || [];
+  state.categories = data.categories || state.categories;
+  state.session = data.session || null;
+  state.previews = {};
+  state.selections = {};
+  updateDraftToolbar();
+  renderList();
+  showToast('Draft reset to the original BIN.');
+}
+
+async function exportDraft() {
+  if (!state.session?.session_id) {
+    return;
+  }
+  const response = await fetch(`/api/session/${state.session.session_id}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stem: stripExtension(state.files.bin?.name || 'edited-bin') }),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    showToast(data.error || 'Export failed.');
+    return;
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  const filename = match ? match[1] : 'edited-bin.zip';
+  downloadBlob(blob, filename);
+  showToast('Export ready.');
+}
+
+function stripExtension(filename) {
+  return String(filename || 'edited-bin').replace(/\.[^.]+$/, '');
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function openMetadataModal(tableId) {
+  const table = state.tables.find(item => item.table_id === tableId);
+  if (!table) {
+    return;
+  }
+  const override = getTableOverride(table);
+  state.editingMetadataTableId = tableId;
+  metadataTitleInput.value = Object.prototype.hasOwnProperty.call(override, 'title') ? override.title : table.title;
+  metadataShortInput.value = Object.prototype.hasOwnProperty.call(override, 'short')
+    ? override.short
+    : (table.description_short || table.description || '');
+  metadataLongInput.value = Object.prototype.hasOwnProperty.call(override, 'long')
+    ? override.long
+    : (table.description_long || '');
+  metadataModal.style.display = 'flex';
+}
+
+function closeMetadataModal() {
+  metadataModal.style.display = 'none';
+  state.editingMetadataTableId = null;
+}
+
+function saveMetadataOverride() {
+  const table = state.tables.find(item => item.table_id === state.editingMetadataTableId);
+  if (!table) {
+    closeMetadataModal();
+    return;
+  }
+  state.metadataOverrides[getMetadataKey(table)] = {
+    title: metadataTitleInput.value.trim(),
+    short: metadataShortInput.value.trim(),
+    long: metadataLongInput.value.trim(),
+  };
+  saveMetadataOverrides();
+  closeMetadataModal();
+  renderList();
+  showToast('Local metadata override saved.');
+}
+
+function clearMetadataOverride() {
+  const table = state.tables.find(item => item.table_id === state.editingMetadataTableId);
+  if (!table) {
+    closeMetadataModal();
+    return;
+  }
+  delete state.metadataOverrides[getMetadataKey(table)];
+  saveMetadataOverrides();
+  closeMetadataModal();
+  renderList();
+  showToast('Local metadata override cleared.');
+}
+
 function copyForAI(table) {
   const lines = [];
   const unitsSuffix = table.units ? ` (${table.units})` : '';
-  lines.push(`[${table.title}]${unitsSuffix}`);
+  lines.push(`[${getDisplayTitle(table)}]${unitsSuffix}`);
 
   if (table.error) {
     lines.push(`ERROR: ${table.error}`);
@@ -789,6 +1464,11 @@ function resetAll() {
   state.search = '';
   state.viewMode = 'workflow';
   state.hideAutogen = true;
+  state.session = null;
+  state.selections = {};
+  state.previews = {};
+  state.editorForms = {};
+  state.axisDrafts = {};
   searchInput.value = '';
   searchClear.style.display = 'none';
   viewModeSelect.value = state.viewMode;
@@ -801,12 +1481,14 @@ function resetAll() {
 
   uploadPanel.style.display = '';
   resultsArea.style.display = 'none';
+  editorToolbar.style.display = 'none';
   btnClear.style.display = 'none';
   headerMeta.textContent = '';
   countBadge.textContent = '0 / 0 shown';
   tableList.innerHTML = '';
   hideError();
   syncHideAutogenButton();
+  updateDraftToolbar();
   updateParseBtn();
 }
 
@@ -828,7 +1510,8 @@ function hideError() {
   uploadError.style.display = 'none';
 }
 
-function showToast() {
+function showToast(message = 'Copied to clipboard!') {
+  toast.textContent = message;
   toast.classList.add('show');
   window.setTimeout(() => toast.classList.remove('show'), 1800);
 }

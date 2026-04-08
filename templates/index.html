@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TunerPro XDF Viewer</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260311e" />
+  <link rel="stylesheet" href="/static/style.css?v=20260318a" />
 </head>
 <body>
 <header>
@@ -110,6 +110,18 @@
     </div>
   </div>
 
+  <div class="editor-toolbar" id="editor-toolbar">
+    <div class="editor-toolbar__status">
+      <span class="editor-badge" id="draft-badge">Draft Clean</span>
+      <span class="editor-meta" id="draft-meta">0 pending edits · 0 dirty tables</span>
+    </div>
+    <div class="editor-toolbar__actions">
+      <button class="btn btn-ghost btn-sm" id="btn-undo-draft" disabled>Undo Last</button>
+      <button class="btn btn-ghost btn-sm" id="btn-reset-draft" disabled>Reset Draft</button>
+      <button class="btn btn-primary btn-sm" id="btn-export-draft" disabled>Export Draft</button>
+    </div>
+  </div>
+
   <div class="table-list" id="table-list"></div>
 </div>
 
@@ -141,8 +153,38 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="metadata-modal" style="display:none">
+  <div class="modal modal--wide">
+    <div class="modal-header">
+      <span>Edit Table Metadata</span>
+      <button class="modal-close" id="metadata-close">x</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">These name and description edits are local UI overrides for this browser. They do not change the BIN or the XDF itself.</p>
+      <div class="metadata-form">
+        <label class="metadata-form__field">
+          <span>Display Name</span>
+          <input type="text" id="metadata-title" />
+        </label>
+        <label class="metadata-form__field">
+          <span>Short Description</span>
+          <input type="text" id="metadata-short" />
+        </label>
+        <label class="metadata-form__field">
+          <span>Long Description</span>
+          <textarea id="metadata-long" rows="6"></textarea>
+        </label>
+      </div>
+      <div class="metadata-form__actions">
+        <button class="btn btn-ghost btn-sm" id="metadata-reset">Clear Override</button>
+        <button class="btn btn-primary btn-sm" id="metadata-save">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="copy-toast">Copied to clipboard!</div>
 
-<script src="/static/app.js?v=20260311e"></script>
+<script src="/static/app.js?v=20260318a"></script>
 </body>
 </html>
