@@ -22,6 +22,9 @@ const state = {
   hasDiff: false,
   viewMode: 'workflow',
   hideAutogen: true,
+  selectedMap: 'Map 1',
+  selectedCategory: null,
+  selectedTableId: null,
   session: null,
   selections: {},
   previews: {},
@@ -54,6 +57,16 @@ const $ = id => document.getElementById(id);
 const uploadPanel = $('upload-panel');
 const resultsArea = $('results-area');
 const tableList = $('table-list');
+const mapTabs = $('map-tabs');
+const categoryNav = $('category-nav');
+const categoryTabs = $('category-tabs');
+const workspaceOverview = $('workspace-overview');
+const inspectorEmpty = $('inspector-empty');
+const inspectorPanel = $('inspector-panel');
+const inspectorHeader = $('inspector-header');
+const inspectorBody = $('inspector-body');
+const mapPanel = $('map-panel');
+const categoryPanel = $('category-panel');
 const searchInput = $('search-input');
 const searchClear = $('search-clear');
 const countBadge = $('count-badge');
@@ -333,8 +346,11 @@ function renderResults() {
   resultsArea.style.display = '';
   editorToolbar.style.display = '';
   btnClear.style.display = '';
-  headerMeta.textContent = `${state.files.xdf?.name || ''} Â· ${state.files.bin?.name || ''} Â· ${state.tables.length} definitions`;
+  headerMeta.textContent = `${state.files.xdf?.name || ''} · ${state.files.bin?.name || ''} · ${state.tables.length} definitions`;
   viewModeSelect.value = state.viewMode;
+  if (!state.selectedCategory) {
+    state.selectedCategory = WORKFLOW_BUCKET_ORDER[0];
+  }
   updateDraftToolbar();
   renderList();
 }
@@ -345,23 +361,35 @@ function renderList() {
   const visible = visibleState.visible;
   countBadge.textContent = buildCountLabel(visible.length, state.tables.length, visibleState.reasons);
   tableList.innerHTML = '';
+  workspaceOverview.innerHTML = '';
+  categoryTabs.innerHTML = '';
+  mapTabs.innerHTML = '';
+  categoryNav.innerHTML = '';
+  mapPanel.style.display = state.viewMode === 'workflow' ? '' : 'none';
+  categoryPanel.style.display = state.viewMode === 'workflow' ? '' : 'none';
 
   if (!visible.length) {
     tableList.innerHTML = '<div class="no-results"><div>No tables match your filter.</div></div>';
+    renderInspector();
     return;
   }
 
   if (state.viewMode === 'flat') {
     renderFlatView(visible);
+    ensureSelectedTable(visible);
+    renderInspector(visible);
     return;
   }
 
   if (state.viewMode === 'hierarchy') {
     renderHierarchyView(visible);
+    ensureSelectedTable(visible);
+    renderInspector(visible);
     return;
   }
 
   renderWorkflowView(visible);
+  renderInspector(visible);
 }
 
 function getVisibleState() {
@@ -401,6 +429,255 @@ function buildCountLabel(visibleCount, totalCount, reasons) {
   return reasons.length ? `${base} - ${reasons.join(' + ')}` : base;
 }
 
+function renderWorkflowView(tables) {
+  const maps = getWorkflowMaps(tables);
+  if (!maps.includes(state.selectedMap)) {
+    state.selectedMap = maps[0] || 'Map 1';
+  }
+
+  renderMapTabs(maps, tables);
+
+  const mapTables = tables.filter(table => tableBelongsToMap(table, state.selectedMap));
+  const categories = getWorkflowCategories(mapTables);
+  if (!categories.some(category => category.bucket === state.selectedCategory)) {
+    state.selectedCategory = categories[0]?.bucket || WORKFLOW_BUCKET_ORDER[0];
+  }
+
+  renderCategoryNav(categories);
+  renderCategoryTabs(categories);
+  renderWorkflowOverview(mapTables, categories);
+
+  const activeTables = mapTables
+    .filter(table => (table.workflow_bucket || 'Other') === state.selectedCategory)
+    .sort(compareTables);
+
+  ensureSelectedTable(activeTables.length ? activeTables : mapTables);
+
+  if (!activeTables.length) {
+    tableList.innerHTML = '<div class="no-results"><div>No tables in this category for the selected map.</div></div>';
+    return;
+  }
+
+  appendFamilyGroups(tableList, activeTables);
+}
+
+function getWorkflowMaps(tables) {
+  const numbers = new Set(
+    tables
+      .map(table => extractVariantNumber(table.map_variant))
+      .filter(value => Number.isFinite(value) && value > 0 && value <= 4),
+  );
+
+  if (!numbers.size) {
+    return ['Map 1'];
+  }
+
+  return [1, 2, 3, 4].map(number => `Map ${number}`);
+}
+
+function renderMapTabs(maps, tables) {
+  mapTabs.innerHTML = '';
+  maps.forEach(mapLabel => {
+    const mapTables = tables.filter(table => tableBelongsToMap(table, mapLabel));
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `map-tab${mapLabel === state.selectedMap ? ' is-active' : ''}`;
+    button.innerHTML = `
+      <span>${escapeHtml(mapLabel)}</span>
+      <span class="map-tab__meta">${mapTables.length} entries</span>`;
+    button.addEventListener('click', () => {
+      state.selectedMap = mapLabel;
+      state.selectedCategory = null;
+      renderList();
+    });
+    mapTabs.appendChild(button);
+  });
+}
+
+function getWorkflowCategories(tables) {
+  const grouped = new Map();
+  tables.forEach(table => {
+    const bucket = table.workflow_bucket || 'Other';
+    if (!grouped.has(bucket)) {
+      grouped.set(bucket, []);
+    }
+    grouped.get(bucket).push(table);
+  });
+
+  return Array.from(grouped.entries())
+    .map(([bucket, bucketTables]) => ({
+      bucket,
+      tables: bucketTables.slice().sort(compareTables),
+      familyCount: groupByFamily(bucketTables).length,
+    }))
+    .sort((a, b) => compareBuckets(a.bucket, b.bucket));
+}
+
+function renderCategoryNav(categories) {
+  categoryNav.innerHTML = '';
+  categories.forEach(category => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `category-nav__item${category.bucket === state.selectedCategory ? ' is-active' : ''}`;
+    button.innerHTML = `
+      <span>${escapeHtml(category.bucket)}</span>
+      <span class="category-nav__meta">${category.tables.length}</span>`;
+    button.addEventListener('click', () => {
+      state.selectedCategory = category.bucket;
+      renderList();
+    });
+    categoryNav.appendChild(button);
+  });
+}
+
+function renderCategoryTabs(categories) {
+  categoryTabs.innerHTML = '';
+  categories.forEach(category => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `category-tab${category.bucket === state.selectedCategory ? ' is-active' : ''}`;
+    button.innerHTML = `
+      <span>${escapeHtml(shortBucketLabel(category.bucket))}</span>
+      <span class="category-tab__count">${category.tables.length}</span>`;
+    button.addEventListener('click', () => {
+      state.selectedCategory = category.bucket;
+      renderList();
+    });
+    categoryTabs.appendChild(button);
+  });
+}
+
+function renderWorkflowOverview(mapTables, categories) {
+  const familyCount = groupByFamily(mapTables).length;
+  const globalCount = mapTables.filter(isGlobalTable).length;
+  const dirtyCount = mapTables.filter(table => table.is_dirty).length;
+  const generalTables = mapTables
+    .filter(table => isGeneralMapSetting(table))
+    .sort(compareTables)
+    .slice(0, 5);
+  const hotTables = mapTables
+    .filter(table => !table.low_priority_reason)
+    .sort(compareTables)
+    .slice(0, 6);
+
+  workspaceOverview.innerHTML = `
+    <div class="overview-card">
+      <div class="overview-card__eyebrow">${escapeHtml(state.selectedMap)}</div>
+      <div class="overview-card__title">General map settings</div>
+      <div class="overview-summary">
+        <div class="overview-stat">
+          <span class="overview-stat__value">${mapTables.length}</span>
+          <span class="overview-stat__label">Visible Tables</span>
+        </div>
+        <div class="overview-stat">
+          <span class="overview-stat__value">${familyCount}</span>
+          <span class="overview-stat__label">Families</span>
+        </div>
+        <div class="overview-stat">
+          <span class="overview-stat__value">${globalCount}</span>
+          <span class="overview-stat__label">Global Rows</span>
+        </div>
+        <div class="overview-stat">
+          <span class="overview-stat__value">${dirtyCount}</span>
+          <span class="overview-stat__label">Dirty Tables</span>
+        </div>
+      </div>
+      <div class="overview-pills overview-pills--general"></div>
+    </div>
+    <div class="overview-card">
+      <div class="overview-card__eyebrow">Hot Tables</div>
+      <div class="overview-card__title">Most useful for this map right now</div>
+      <div class="overview-summary">
+        ${categories.slice(0, 4).map(category => `
+          <div class="overview-stat">
+            <span class="overview-stat__value">${category.familyCount}</span>
+            <span class="overview-stat__label">${escapeHtml(shortBucketLabel(category.bucket))}</span>
+          </div>`).join('')}
+      </div>
+      <div class="overview-pills overview-pills--hot"></div>
+    </div>`;
+
+  const generalWrap = workspaceOverview.querySelector('.overview-pills--general');
+  const hotWrap = workspaceOverview.querySelector('.overview-pills--hot');
+
+  (generalTables.length ? generalTables : hotTables.slice(0, 4)).forEach(table => {
+    generalWrap.appendChild(buildOverviewPill(table));
+  });
+  hotTables.forEach(table => {
+    hotWrap.appendChild(buildOverviewPill(table));
+  });
+}
+
+function buildOverviewPill(table) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'overview-pill';
+  const globalBadge = isGlobalTable(table) ? '<span class="overview-pill__badge">Global</span>' : '';
+  button.innerHTML = `${globalBadge}<span>${escapeHtml(getDisplayTitle(table))}</span>`;
+  button.addEventListener('click', () => {
+    state.selectedCategory = table.workflow_bucket || state.selectedCategory;
+    selectTable(table.table_id);
+  });
+  return button;
+}
+
+function tableBelongsToMap(table, mapLabel) {
+  const mapNumber = extractVariantNumber(mapLabel);
+  const tableMapNumber = extractVariantNumber(table.map_variant);
+  return tableMapNumber === mapNumber || isGlobalTable(table);
+}
+
+function isGlobalTable(table) {
+  return !table.map_variant;
+}
+
+function isGeneralMapSetting(table) {
+  const text = `${table.workflow_bucket || ''} ${table.title || ''} ${table.family_title || ''}`.toLowerCase();
+  if (isGlobalTable(table) || (table.workflow_bucket || '') === 'Map Switching / Multi-map') {
+    return true;
+  }
+  return ['ethanol', 'switch', 'slot', 'map', 'flex', 'global'].some(keyword => text.includes(keyword));
+}
+
+function shortBucketLabel(bucket) {
+  return String(bucket)
+    .replace(' / WGDC', '')
+    .replace(' / Ethanol', '')
+    .replace(' / Limits', '')
+    .replace(' / Fuel System', '');
+}
+
+function ensureSelectedTable(tables) {
+  const available = new Set((tables || []).map(table => table.table_id));
+  if (state.selectedTableId && available.has(state.selectedTableId)) {
+    return;
+  }
+  state.selectedTableId = tables[0]?.table_id || null;
+  const selected = tables.find(table => table.table_id === state.selectedTableId);
+  if (selected && isScalarTable(selected) && !state.selections[selected.table_id]) {
+    state.selections[selected.table_id] = {
+      row_start: 0,
+      row_end: Math.max(selected.rows - 1, 0),
+      col_start: 0,
+      col_end: Math.max(selected.cols - 1, 0),
+    };
+  }
+}
+
+function selectTable(tableId) {
+  state.selectedTableId = tableId;
+  const table = state.tables.find(item => item.table_id === tableId);
+  if (table && isScalarTable(table) && !state.selections[tableId]) {
+    state.selections[tableId] = {
+      row_start: 0,
+      row_end: Math.max(table.rows - 1, 0),
+      col_start: 0,
+      col_end: Math.max(table.cols - 1, 0),
+    };
+  }
+  renderList();
+}
+
 function updateDraftToolbar() {
   const session = state.session;
   const pending = Number(session?.pending_change_count || 0);
@@ -409,7 +686,7 @@ function updateDraftToolbar() {
 
   if (!session) {
     draftBadge.textContent = 'Draft Unloaded';
-    draftMeta.textContent = '0 pending edits Â· 0 dirty tables';
+    draftMeta.textContent = '0 pending edits · 0 dirty tables';
     btnUndoDraft.disabled = true;
     btnResetDraft.disabled = true;
     btnExportDraft.disabled = true;
@@ -484,36 +761,12 @@ function getDisplayLongDescription(table) {
 }
 
 function renderFlatView(tables) {
+  renderAlternateWorkspaceChrome('Flat List', tables, 'Priority-ranked families and tables without map segmentation.');
   appendFamilyGroups(tableList, tables.slice().sort(compareTables));
 }
 
-function renderWorkflowView(tables) {
-  const groups = new Map();
-  tables.forEach(table => {
-    const bucket = table.workflow_bucket || 'Other';
-    if (!groups.has(bucket)) {
-      groups.set(bucket, []);
-    }
-    groups.get(bucket).push(table);
-  });
-
-  Array.from(groups.keys()).sort(compareBuckets).forEach(bucket => {
-    const items = groups.get(bucket).slice().sort(compareTables);
-    const section = buildGroupSection({
-      key: `workflow:${bucket}`,
-      label: bucket,
-      count: items.length,
-      depth: 0,
-      open: bucket !== 'Low Priority',
-      lowPriority: bucket === 'Low Priority',
-    });
-    appendFamilyDescription(section.querySelector('.group-body'), findRepresentative(items), true);
-    appendFamilyGroups(section.querySelector('.group-body'), items);
-    tableList.appendChild(section);
-  });
-}
-
 function renderHierarchyView(tables) {
+  renderAlternateWorkspaceChrome('TunerPro Hierarchy', tables, 'Raw XDF folder and subfolder organization with the new cockpit shell.');
   const root = createNode('All Tables');
   tables.forEach(table => {
     const path = Array.isArray(table.primary_category_path) && table.primary_category_path.length
@@ -534,6 +787,29 @@ function renderHierarchyView(tables) {
   Array.from(root.children.values())
     .sort((a, b) => a.label.localeCompare(b.label))
     .forEach(node => tableList.appendChild(renderHierarchyNode(node, 0)));
+}
+
+function renderAlternateWorkspaceChrome(title, tables, description) {
+  workspaceOverview.innerHTML = `
+    <div class="overview-card">
+      <div class="overview-card__eyebrow">${escapeHtml(title)}</div>
+      <div class="overview-card__title">Alternate browsing mode</div>
+      <div class="overview-summary">
+        <div class="overview-stat">
+          <span class="overview-stat__value">${tables.length}</span>
+          <span class="overview-stat__label">Visible Tables</span>
+        </div>
+        <div class="overview-stat">
+          <span class="overview-stat__value">${groupByFamily(tables).length}</span>
+          <span class="overview-stat__label">Families</span>
+        </div>
+        <div class="overview-stat">
+          <span class="overview-stat__value">${tables.filter(table => table.is_dirty).length}</span>
+          <span class="overview-stat__label">Dirty Tables</span>
+        </div>
+      </div>
+      <div class="desc-short">${escapeHtml(description)}</div>
+    </div>`;
 }
 
 function createNode(label) {
@@ -602,20 +878,32 @@ function shouldRenderAsFamily(group) {
 function buildFamilySection(group) {
   const section = document.createElement('section');
   const familyKey = `family:${group.familyTitle}`;
-  section.className = `family-section${shouldOpen('families', familyKey, false) ? ' open' : ''}`;
+  const isSelected = state.selectedTableId === group.representative.table_id;
+  section.className = `family-section${shouldOpen('families', familyKey, false) ? ' open' : ''}${isSelected ? ' is-selected' : ''}`;
   section.dataset.familyKey = familyKey;
   section.innerHTML = `
-    <button class="family-header" type="button">
-      <svg class="family-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <polyline points="9 18 15 12 9 6"/>
-      </svg>
+    <div class="family-header" role="button" tabindex="0">
+      <button class="family-expander" type="button" aria-label="Toggle family">
+        <svg class="family-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
       <span class="card-type-badge badge-family">family</span>
       <span class="family-title">${escapeHtml(group.familyTitle)}</span>
+      ${group.tables.some(isGlobalTable) ? '<span class="badge-global">global</span>' : ''}
       <span class="family-count">${group.tables.length}</span>
-    </button>
+    </div>
     <div class="family-body"></div>`;
 
-  section.querySelector('.family-header').addEventListener('click', () => {
+  section.querySelector('.family-header').addEventListener('click', event => {
+    if (event.target.closest('.family-expander')) {
+      return;
+    }
+    selectTable(group.representative.table_id);
+  });
+
+  section.querySelector('.family-expander').addEventListener('click', event => {
+    event.stopPropagation();
     section.classList.toggle('open');
   });
 
@@ -725,43 +1013,52 @@ function findRepresentative(tables) {
 function buildCard(table, { titleOverride = null } = {}) {
   const card = document.createElement('article');
   const shouldBeOpen = shouldOpen('cards', table.table_id, Boolean(state.previews[table.table_id]));
-  card.className = `table-card${table.error ? ' has-error' : ''}${shouldBeOpen ? ' open' : ''}`;
+  const isSelected = state.selectedTableId === table.table_id;
+  card.className = `table-card${table.error ? ' has-error' : ''}${shouldBeOpen ? ' open' : ''}${isSelected ? ' is-selected' : ''}`;
   card.dataset.tableId = table.table_id;
 
-  const isScalar = table.type === 'constant' || (table.rows === 1 && table.cols === 1);
   const badgeClass = table.error ? 'badge-error' : table.type === 'constant' ? 'badge-constant' : 'badge-table';
   const badgeText = table.error ? 'error' : table.type === 'constant' ? 'scalar' : 'table';
-  const dims = isScalar ? '' : `${table.rows}x${table.cols}`;
+  const dims = isScalarTable(table) ? '' : `${table.rows}x${table.cols}`;
   const units = table.units ? `[${table.units}]` : '';
   const changeBadge = table.change_count ? `<span class="card-metric" title="Logged edits">${table.change_count} edits</span>` : '';
   const customTitle = getDisplayTitle(table);
   const displayTitle = customTitle !== table.title ? customTitle : (titleOverride || customTitle);
   const dirtyBadge = table.is_dirty ? '<span class="badge-draft">draft</span>' : '';
+  const globalBadge = isGlobalTable(table) ? '<span class="badge-global">global</span>' : '';
 
   card.innerHTML = `
     <div class="card-header">
-      <svg class="card-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <polyline points="9 18 15 12 9 6"/>
-      </svg>
+      <button class="card-expander" type="button" aria-label="Toggle table">
+        <svg class="card-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
       <span class="card-type-badge ${badgeClass}">${badgeText}</span>
       <span class="card-title" title="${escapeHtml(customTitle)}">${escapeHtml(displayTitle)}</span>
-      <button class="card-edit-meta" type="button" title="Edit table name and descriptions">edit</button>
+      ${globalBadge}
       ${table.low_priority_reason ? '<span class="badge-autogen">low priority</span>' : ''}
       ${table.is_autogen ? '<span class="badge-autogen">autogen</span>' : ''}
       ${dirtyBadge}
       ${changeBadge}
       ${units ? `<span class="card-units">${escapeHtml(units)}</span>` : ''}
       ${dims ? `<span class="card-dims">${dims}</span>` : ''}
+      <button class="card-edit-meta" type="button" title="Edit table name and descriptions">edit</button>
       <button class="btn-copy card-copy" type="button" title="Copy for AI">Copy for AI</button>
     </div>
     <div class="card-body">
-      ${buildDescriptionBlock(table)}
-      ${buildEditorPanel(table)}
-      ${buildBody(table)}
+      ${buildBody(table, { includeAxisEditors: false })}
     </div>`;
 
   card.querySelector('.card-header').addEventListener('click', event => {
-    if (event.target.closest('.card-copy')) return;
+    if (event.target.closest('.card-expander, .card-copy, .card-edit-meta')) {
+      return;
+    }
+    selectTable(table.table_id);
+  });
+
+  card.querySelector('.card-expander').addEventListener('click', event => {
+    event.stopPropagation();
     card.classList.toggle('open');
   });
 
@@ -780,6 +1077,99 @@ function buildCard(table, { titleOverride = null } = {}) {
   }
 
   return card;
+}
+
+function renderInspector(visibleTables = []) {
+  const selected = visibleTables.find(table => table.table_id === state.selectedTableId)
+    || state.tables.find(table => table.table_id === state.selectedTableId)
+    || null;
+
+  if (!selected) {
+    inspectorEmpty.style.display = '';
+    inspectorPanel.style.display = 'none';
+    inspectorHeader.innerHTML = '';
+    inspectorBody.innerHTML = '';
+    return;
+  }
+
+  inspectorEmpty.style.display = 'none';
+  inspectorPanel.style.display = '';
+
+  const badgeClass = selected.error ? 'badge-error' : selected.type === 'constant' ? 'badge-constant' : 'badge-table';
+  const badgeText = selected.error ? 'error' : selected.type === 'constant' ? 'scalar' : 'table';
+  const units = selected.units ? `[${selected.units}]` : '';
+  const dims = isScalarTable(selected) ? 'Scalar' : `${selected.rows}x${selected.cols}`;
+  const globalBadge = isGlobalTable(selected) ? '<span class="badge-global">global</span>' : '';
+  const dirtyBadge = selected.is_dirty ? '<span class="badge-draft">draft</span>' : '';
+  const variantMeta = selected.variant_label ? `<span>${escapeHtml(selected.variant_label)}</span>` : '';
+  const categoryMeta = selected.workflow_bucket ? `<span>${escapeHtml(selected.workflow_bucket)}</span>` : '';
+  const changeMeta = selected.change_count ? `<span>${selected.change_count} edits</span>` : '';
+
+  inspectorHeader.innerHTML = `
+    <div class="inspector-panel__title">
+      <span class="card-type-badge ${badgeClass}">${badgeText}</span>
+      <h3>${escapeHtml(getDisplayTitle(selected))}</h3>
+      ${globalBadge}
+      ${dirtyBadge}
+    </div>
+    <div class="inspector-panel__meta">
+      ${units ? `<span>${escapeHtml(units)}</span>` : ''}
+      <span>${dims}</span>
+      ${variantMeta}
+      ${categoryMeta}
+      ${changeMeta}
+    </div>
+    <div class="inspector-panel__actions">
+      <button class="btn btn-ghost btn-sm inspector-copy" type="button">Copy for AI</button>
+      <button class="btn btn-ghost btn-sm inspector-meta" type="button">Edit Metadata</button>
+      <button class="btn btn-ghost btn-sm inspector-ai" type="button">AI Context</button>
+    </div>`;
+
+  const descriptionMarkup = buildDescriptionBlock(selected) || '<div class="desc-short">No description available yet for this table.</div>';
+  const editMarkup = selected.editable && !selected.error
+    ? buildEditorPanel(selected)
+    : '<div class="desc-short">This table is currently read-only.</div>';
+  const axisMarkup = buildAxisEditors(selected) || '<div class="desc-short">No editable embedded breakpoints are available for this table.</div>';
+  const familyMeta = selected.family_title && selected.family_title !== selected.title
+    ? `<div class="desc-short">Family: ${escapeHtml(selected.family_title)}</div>`
+    : '';
+  const categoryPath = (selected.primary_category_path || []).length
+    ? `<div class="desc-long">${escapeHtml((selected.primary_category_path || []).join(' › '))}</div>`
+    : '';
+
+  inspectorBody.innerHTML = `
+    <section class="inspector-section">
+      <div class="inspector-section__title">Description</div>
+      ${descriptionMarkup}
+    </section>
+    <section class="inspector-section">
+      <div class="inspector-section__title">Editing</div>
+      ${editMarkup}
+    </section>
+    <section class="inspector-section">
+      <div class="inspector-section__title">Axis Tools</div>
+      ${axisMarkup}
+    </section>
+    <section class="inspector-section">
+      <div class="inspector-section__title">Context</div>
+      ${familyMeta}
+      <div class="desc-short">Bucket: ${escapeHtml(selected.workflow_bucket || 'Other')}</div>
+      ${categoryPath}
+    </section>`;
+
+  inspectorHeader.querySelector('.inspector-copy').addEventListener('click', () => copyForAI(selected));
+  inspectorHeader.querySelector('.inspector-meta').addEventListener('click', () => openMetadataModal(selected.table_id));
+  inspectorHeader.querySelector('.inspector-ai').addEventListener('click', () => {
+    aiContextModal.style.display = 'flex';
+  });
+
+  if (selected.editable && !selected.error) {
+    wireEditableScope(inspectorPanel, selected, { hasCellGrid: false });
+  }
+}
+
+function isScalarTable(table) {
+  return table.type === 'constant' || (table.rows === 1 && table.cols === 1);
 }
 
 function buildDescriptionBlock(table) {
@@ -810,7 +1200,7 @@ function buildEditorPanel(table) {
   const showValue = !String(formState.operation).startsWith('interpolate');
   const previewSummary = preview ? `
     <div class="editor-preview-copy">
-      ${preview.summary.changed_cell_count} cells Â· delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
+      ${preview.summary.changed_cell_count} cells · delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
     </div>
     ${(preview.changes || []).slice(0, 6).map(change => `
       <div class="editor-preview-line">
@@ -844,15 +1234,15 @@ function buildEditorPanel(table) {
     </div>`;
 }
 
-function buildBody(table) {
+function buildBody(table, { includeAxisEditors = true } = {}) {
   if (table.error) {
     return `<div class="card-error-msg">Error: ${escapeHtml(table.error)}</div>`;
   }
   if (!table.rows) {
     return '<div class="card-error-msg">No data extracted.</div>';
   }
-  const axisEditors = buildAxisEditors(table);
-  if (table.type === 'constant' || (table.rows === 1 && table.cols === 1)) {
+  const axisEditors = includeAxisEditors ? buildAxisEditors(table) : '';
+  if (isScalarTable(table)) {
     return `${axisEditors}${buildScalar(table)}`;
   }
   return `${axisEditors}${buildTable(table)}`;
@@ -978,7 +1368,7 @@ function formatSelectionLabel(selection, table) {
   if (!selection) {
     return 'Selection: none';
   }
-  return `Selection: R${selection.row_start + 1}-${selection.row_end + 1} Â· C${selection.col_start + 1}-${selection.col_end + 1} of ${table.rows}x${table.cols}`;
+  return `Selection: R${selection.row_start + 1}-${selection.row_end + 1} · C${selection.col_start + 1}-${selection.col_end + 1} of ${table.rows}x${table.cols}`;
 }
 
 function buildPreviewLookup(tableId) {
@@ -1035,85 +1425,8 @@ function selectionContains(selection, row, col) {
 }
 
 function wireEditableCard(card, table) {
-  const panel = card.querySelector('.editor-panel');
-  if (!panel) {
-    return;
-  }
-
   const tableId = table.table_id;
-  const operationSelect = panel.querySelector('.editor-operation');
-  const valueWrap = panel.querySelector('.editor-value-wrap');
-  const valueInput = panel.querySelector('.editor-value');
-
-  const syncFormState = () => {
-    const value = valueInput ? valueInput.value : '';
-    state.editorForms[tableId] = {
-      operation: operationSelect.value,
-      value,
-    };
-    valueWrap.style.display = operationSelect.value.startsWith('interpolate') ? 'none' : '';
-  };
-
-  syncFormState();
-  operationSelect.addEventListener('change', syncFormState);
-  if (valueInput) {
-    valueInput.addEventListener('input', syncFormState);
-  }
-
-  card.querySelectorAll('.axis-input').forEach(input => {
-    input.addEventListener('input', event => {
-      const axisName = event.target.dataset.axisName;
-      const index = Number(event.target.dataset.axisIndex);
-      const values = [...getAxisDraft(table, axisName)];
-      values[index] = Number(event.target.value);
-      state.axisDrafts[tableId][axisName] = values;
-    });
-  });
-
-  card.querySelectorAll('[data-axis-action="reset"]').forEach(button => {
-    button.addEventListener('click', event => {
-      event.stopPropagation();
-      const axisName = button.dataset.axisName;
-      state.axisDrafts[tableId][axisName] = [...(axisName === 'x' ? (table.x_labels || []) : (table.y_labels || []))];
-      renderList();
-    });
-  });
-
-  card.querySelectorAll('[data-axis-action="apply"]').forEach(button => {
-    button.addEventListener('click', async event => {
-      event.stopPropagation();
-      await applyAxisDraft(tableId, button.dataset.axisName);
-    });
-  });
-
-  panel.querySelector('[data-editor-action="select-all"]').addEventListener('click', event => {
-    event.stopPropagation();
-    state.selections[tableId] = {
-      row_start: 0,
-      row_end: Math.max(table.rows - 1, 0),
-      col_start: 0,
-      col_end: Math.max(table.cols - 1, 0),
-    };
-    delete state.previews[tableId];
-    refreshEditableCard(card, table);
-  });
-
-  panel.querySelector('[data-editor-action="clear-selection"]').addEventListener('click', event => {
-    event.stopPropagation();
-    delete state.selections[tableId];
-    delete state.previews[tableId];
-    refreshEditableCard(card, table);
-  });
-
-  panel.querySelector('.editor-preview-btn').addEventListener('click', async event => {
-    event.stopPropagation();
-    await runEditorAction(tableId, true);
-  });
-
-  panel.querySelector('.editor-apply-btn').addEventListener('click', async event => {
-    event.stopPropagation();
-    await runEditorAction(tableId, false);
-  });
+  wireEditableScope(card, table, { hasCellGrid: true });
 
   card.querySelectorAll('.table-cell').forEach(cell => {
     cell.addEventListener('mousedown', event => {
@@ -1124,6 +1437,7 @@ function wireEditableCard(card, table) {
       const col = Number(cell.dataset.col);
       dragSelection = { tableId, anchorRow: row, anchorCol: col };
       state.selections[tableId] = { row_start: row, row_end: row, col_start: col, col_end: col };
+      state.selectedTableId = tableId;
       delete state.previews[tableId];
       refreshEditableCard(card, table);
       event.preventDefault();
@@ -1143,6 +1457,95 @@ function wireEditableCard(card, table) {
       };
       delete state.previews[tableId];
       refreshEditableCard(card, table);
+    });
+  });
+}
+
+function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
+  const tableId = table.table_id;
+  const panel = container.querySelector('.editor-panel');
+
+  if (panel) {
+    const operationSelect = panel.querySelector('.editor-operation');
+    const valueWrap = panel.querySelector('.editor-value-wrap');
+    const valueInput = panel.querySelector('.editor-value');
+
+    const syncFormState = () => {
+      const value = valueInput ? valueInput.value : '';
+      state.editorForms[tableId] = {
+        operation: operationSelect.value,
+        value,
+      };
+      valueWrap.style.display = operationSelect.value.startsWith('interpolate') ? 'none' : '';
+    };
+
+    syncFormState();
+    operationSelect.addEventListener('change', syncFormState);
+    if (valueInput) {
+      valueInput.addEventListener('input', syncFormState);
+    }
+
+    panel.querySelector('[data-editor-action="select-all"]').addEventListener('click', event => {
+      event.stopPropagation();
+      state.selections[tableId] = {
+        row_start: 0,
+        row_end: Math.max(table.rows - 1, 0),
+        col_start: 0,
+        col_end: Math.max(table.cols - 1, 0),
+      };
+      delete state.previews[tableId];
+      if (hasCellGrid) {
+        refreshEditableCard(container, table);
+      } else {
+        renderList();
+      }
+    });
+
+    panel.querySelector('[data-editor-action="clear-selection"]').addEventListener('click', event => {
+      event.stopPropagation();
+      delete state.selections[tableId];
+      delete state.previews[tableId];
+      if (hasCellGrid) {
+        refreshEditableCard(container, table);
+      } else {
+        renderList();
+      }
+    });
+
+    panel.querySelector('.editor-preview-btn').addEventListener('click', async event => {
+      event.stopPropagation();
+      await runEditorAction(tableId, true);
+    });
+
+    panel.querySelector('.editor-apply-btn').addEventListener('click', async event => {
+      event.stopPropagation();
+      await runEditorAction(tableId, false);
+    });
+  }
+
+  container.querySelectorAll('.axis-input').forEach(input => {
+    input.addEventListener('input', event => {
+      const axisName = event.target.dataset.axisName;
+      const index = Number(event.target.dataset.axisIndex);
+      const values = [...getAxisDraft(table, axisName)];
+      values[index] = Number(event.target.value);
+      state.axisDrafts[tableId][axisName] = values;
+    });
+  });
+
+  container.querySelectorAll('[data-axis-action="reset"]').forEach(button => {
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      const axisName = button.dataset.axisName;
+      state.axisDrafts[tableId][axisName] = [...(axisName === 'x' ? (table.x_labels || []) : (table.y_labels || []))];
+      renderList();
+    });
+  });
+
+  container.querySelectorAll('[data-axis-action="apply"]').forEach(button => {
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      await applyAxisDraft(tableId, button.dataset.axisName);
     });
   });
 }
@@ -1549,3 +1952,12 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+
+
+
+
+
+
+
+

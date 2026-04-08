@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TunerPro XDF Viewer</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260318a" />
+  <link rel="stylesheet" href="/static/style.css?v=20260408a" />
 </head>
 <body>
 <header>
@@ -84,45 +84,89 @@
 </div>
 
 <div class="results-area" id="results-area" style="display:none">
-  <div class="toolbar">
-    <div class="search-wrap">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-      </svg>
-      <input type="text" id="search-input" placeholder="Search tables and families..." autocomplete="off" />
-      <button class="search-clear" id="search-clear" style="display:none">x</button>
-    </div>
-
-    <div class="toolbar-right">
-      <span class="count-badge" id="count-badge">0 / 0 shown</span>
-      <div class="view-select-wrap">
-        <label class="view-select-label" for="view-mode">View</label>
-        <select class="view-select" id="view-mode" title="Choose how tables are grouped">
-          <option value="workflow">Tuner Workflow</option>
-          <option value="hierarchy">TunerPro Hierarchy</option>
-          <option value="flat">Flat List</option>
-        </select>
+  <div class="workspace-topbar">
+    <div class="workspace-topbar__meta">
+      <div class="workspace-kicker">Loaded Workspace</div>
+      <div class="workspace-title-wrap">
+        <div class="workspace-title">Map-first tuning cockpit</div>
+        <div class="workspace-subtitle">Compact browsing, editing, and AI-assisted review in one compartmentalized workspace.</div>
       </div>
-      <button class="btn btn-ghost btn-sm" id="btn-hide-autogen" title="Toggle autogen axis tables">Autogen Hidden</button>
-      <button class="btn btn-ghost btn-sm" id="btn-ai-context" title="Show AI context prompt">AI Context</button>
-      <button class="btn btn-ghost btn-sm" id="btn-collapse-all">Collapse All</button>
-      <button class="btn btn-ghost btn-sm" id="btn-new-files">New Files</button>
+    </div>
+
+    <div class="workspace-topbar__controls">
+      <span class="count-badge" id="count-badge">0 / 0 shown</span>
+      <div class="editor-toolbar" id="editor-toolbar">
+        <div class="editor-toolbar__status">
+          <span class="editor-badge" id="draft-badge">Draft Clean</span>
+          <span class="editor-meta" id="draft-meta">0 pending edits · 0 dirty tables</span>
+        </div>
+        <div class="editor-toolbar__actions">
+          <button class="btn btn-ghost btn-sm" id="btn-undo-draft" disabled>Undo Last</button>
+          <button class="btn btn-ghost btn-sm" id="btn-reset-draft" disabled>Reset Draft</button>
+          <button class="btn btn-primary btn-sm" id="btn-export-draft" disabled>Export Draft</button>
+        </div>
+      </div>
+      <div class="workspace-actions">
+        <button class="btn btn-ghost btn-sm" id="btn-ai-context" title="Show AI context prompt">AI Context</button>
+        <button class="btn btn-ghost btn-sm" id="btn-collapse-all">Collapse All</button>
+        <button class="btn btn-ghost btn-sm" id="btn-new-files">New Files</button>
+      </div>
     </div>
   </div>
 
-  <div class="editor-toolbar" id="editor-toolbar">
-    <div class="editor-toolbar__status">
-      <span class="editor-badge" id="draft-badge">Draft Clean</span>
-      <span class="editor-meta" id="draft-meta">0 pending edits · 0 dirty tables</span>
-    </div>
-    <div class="editor-toolbar__actions">
-      <button class="btn btn-ghost btn-sm" id="btn-undo-draft" disabled>Undo Last</button>
-      <button class="btn btn-ghost btn-sm" id="btn-reset-draft" disabled>Reset Draft</button>
-      <button class="btn btn-primary btn-sm" id="btn-export-draft" disabled>Export Draft</button>
-    </div>
-  </div>
+  <div class="workspace-shell">
+    <aside class="workspace-sidebar">
+      <section class="workspace-panel">
+        <div class="workspace-panel__label">Browse</div>
+        <div class="search-wrap search-wrap--sidebar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="text" id="search-input" placeholder="Search tables and families..." autocomplete="off" />
+          <button class="search-clear" id="search-clear" style="display:none">x</button>
+        </div>
+        <div class="view-select-wrap view-select-wrap--block">
+          <label class="view-select-label" for="view-mode">Workspace Mode</label>
+          <select class="view-select" id="view-mode" title="Choose how tables are grouped">
+            <option value="workflow">Tuner Workflow</option>
+            <option value="hierarchy">TunerPro Hierarchy</option>
+            <option value="flat">Flat List</option>
+          </select>
+        </div>
+        <button class="btn btn-ghost btn-sm btn-block" id="btn-hide-autogen" title="Toggle autogen axis tables">Autogen Hidden</button>
+      </section>
 
-  <div class="table-list" id="table-list"></div>
+      <section class="workspace-panel" id="map-panel">
+        <div class="workspace-panel__label">Maps</div>
+        <div class="map-tabs" id="map-tabs"></div>
+      </section>
+
+      <section class="workspace-panel" id="category-panel">
+        <div class="workspace-panel__label">Category Navigation</div>
+        <div class="category-nav" id="category-nav"></div>
+      </section>
+    </aside>
+
+    <main class="workspace-main">
+      <section class="workspace-overview" id="workspace-overview"></section>
+      <section class="category-tabs" id="category-tabs"></section>
+      <div class="table-list" id="table-list"></div>
+    </main>
+
+    <aside class="workspace-inspector">
+      <div class="workspace-panel workspace-panel--inspector">
+        <div class="workspace-panel__label">Inspector</div>
+        <div class="inspector-empty" id="inspector-empty">
+          <div class="inspector-empty__title">Select a table</div>
+          <div class="inspector-empty__copy">Pick a table row to review descriptions, adjust metadata, preview edits, or work on axis breakpoints.</div>
+        </div>
+        <div class="inspector-panel" id="inspector-panel" style="display:none">
+          <div class="inspector-panel__header" id="inspector-header"></div>
+          <div class="inspector-panel__body" id="inspector-body"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
 </div>
 
 <div class="modal-backdrop" id="debug-modal" style="display:none">
@@ -185,6 +229,7 @@
 
 <div class="toast" id="copy-toast">Copied to clipboard!</div>
 
-<script src="/static/app.js?v=20260318a"></script>
+<script src="/static/app.js?v=20260408a"></script>
 </body>
 </html>
+
