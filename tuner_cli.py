@@ -33,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     parse_parser.add_argument('--bin2', help='Optional second BIN for diff mode')
     parse_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file to create/update')
 
+    compare_parser = subparsers.add_parser('compare', help='Compare two BINs against one XDF without creating an edit session')
+    compare_parser.add_argument('xdf', help='Path to the XDF file')
+    compare_parser.add_argument('base_bin', help='Path to the base BIN file')
+    compare_parser.add_argument('compare_bin', help='Path to the compare BIN file')
+    compare_parser.add_argument('--limit', type=int, default=25, help='Maximum number of changed tables/raw ranges to print')
+
     list_parser = subparsers.add_parser('list', help='List tables and families in the current session')
     list_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
     list_parser.add_argument('--bucket', help='Workflow bucket filter substring')
@@ -89,6 +95,7 @@ def emit(args, payload) -> int:
     if command == 'commands':
         print('commands')
         print('  parse   Create/update a session file from XDF + BIN inputs')
+        print('  compare Compare two BINs with one XDF and summarize mapped + raw changes')
         print('  list    List tables with ids, buckets, dirty state, and dimensions')
         print('  show    Print one table in a copy-for-AI style grid')
         print('  diff    Show pending edits and dirty tables')
@@ -103,6 +110,25 @@ def emit(args, payload) -> int:
         print(f"session: {payload['session_path']}")
         print(f"tables: {payload['session']['dirty_table_count']} dirty / {payload['table_count']} total")
         print(f"source: {payload['session']['source_xdf_name']} + {payload['session']['source_bin_name']}")
+        return 0
+
+    if command == 'compare':
+        summary = payload['summary']
+        print(
+            f"changed tables: {summary['changed_table_count']} | "
+            f"raw ranges: {summary['raw_change_range_count']} | "
+            f"source: {summary['base_bin_name']} -> {summary['compare_bin_name']}"
+        )
+        print('mapped changes')
+        for table in payload['tables']:
+            dims = f"{table['rows']}x{table['cols']}" if table['rows'] and table['cols'] else '-'
+            print(f"  {table['table_id']} | {table['workflow_bucket']} | {dims} | {table['title']} | changed={table['changed_cell_count']}")
+        print('raw ranges')
+        for item in payload['raw_ranges']:
+            print(
+                f"  0x{item['start']:x}-0x{item['end']:x} | len={item['length']} | "
+                f"before={item['before_hex']} | after={item['after_hex']}"
+            )
         return 0
 
     if command == 'list':
@@ -330,6 +356,40 @@ def command_parse(args) -> dict:
     }
 
 
+def command_compare(args) -> dict:
+    session = EditSession(
+        xdf_bytes=Path(args.xdf).read_bytes(),
+        bin_bytes=Path(args.base_bin).read_bytes(),
+        xdf_name=Path(args.xdf).name,
+        bin_name=Path(args.base_bin).name,
+        bin2_bytes=Path(args.compare_bin).read_bytes(),
+        bin2_name=Path(args.compare_bin).name,
+    )
+    tables = []
+    for table in session.list_tables():
+        if not table.get('has_diff'):
+            continue
+        summary = summarize_table_diff(table)
+        if summary['changed_cell_count'] == 0:
+            continue
+        entry = dict(table)
+        entry.update(summary)
+        tables.append(entry)
+    raw_ranges = build_raw_diff_ranges(session.source_bin, session.reference_bin or b'')
+    limit = max(args.limit, 0)
+    return {
+        'summary': {
+            'xdf_name': session.source_xdf_name,
+            'base_bin_name': session.source_bin_name,
+            'compare_bin_name': session.reference_bin_name,
+            'changed_table_count': len(tables),
+            'raw_change_range_count': len(raw_ranges),
+        },
+        'tables': tables[:limit],
+        'raw_ranges': raw_ranges[:limit],
+    }
+
+
 def command_list(args) -> dict:
     session = load_required_session(args.session)
     tables = session.list_tables()
@@ -447,15 +507,66 @@ def command_export(args) -> dict:
         return session.export_bin_and_log(args.output_bin)
 
 
+def summarize_table_diff(table: dict) -> dict:
+    changes = []
+    grid = table.get('grid') or []
+    grid2 = table.get('grid2') or []
+    for row_index, row in enumerate(grid):
+        other_row = grid2[row_index] if row_index < len(grid2) else []
+        for col_index, value in enumerate(row):
+            other = other_row[col_index] if col_index < len(other_row) else None
+            if other is None or value != other:
+                changes.append({
+                    'row': row_index,
+                    'col': col_index,
+                    'before': value,
+                    'after': other,
+                })
+    return {
+        'changed_cell_count': len(changes),
+        'changed_cells': changes[:80],
+        'changes_truncated': len(changes) > 80,
+    }
+
+
+def build_raw_diff_ranges(base_bytes: bytes, compare_bytes: bytes) -> list[dict]:
+    ranges = []
+    max_len = min(len(base_bytes), len(compare_bytes))
+    start = None
+    for index in range(max_len):
+        if base_bytes[index] != compare_bytes[index]:
+            if start is None:
+                start = index
+            continue
+        if start is not None:
+            ranges.append(make_raw_range(base_bytes, compare_bytes, start, index))
+            start = None
+    if start is not None:
+        ranges.append(make_raw_range(base_bytes, compare_bytes, start, max_len))
+    return ranges
+
+
+def make_raw_range(base_bytes: bytes, compare_bytes: bytes, start: int, end: int) -> dict:
+    return {
+        'start': start,
+        'end': end,
+        'length': end - start,
+        'before_hex': base_bytes[start:end].hex(),
+        'after_hex': compare_bytes[start:end].hex(),
+    }
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
     try:
         if args.command == 'commands':
-            payload = {'commands': ['parse', 'list', 'show', 'diff', 'apply', 'undo', 'reset', 'export']}
+            payload = {'commands': ['parse', 'compare', 'list', 'show', 'diff', 'apply', 'undo', 'reset', 'export']}
         elif args.command == 'parse':
             payload = command_parse(args)
+        elif args.command == 'compare':
+            payload = command_compare(args)
         elif args.command == 'list':
             payload = command_list(args)
         elif args.command == 'show':

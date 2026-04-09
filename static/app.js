@@ -35,6 +35,7 @@ const state = {
   quickAddFolderId: null,
   quickAddAssignments: new Set(),
   quickAddQuery: '',
+  selectedFolderId: null,
   metadataOverrides: loadMetadataOverrides(),
   editingMetadataTableId: null,
   openState: { cards: new Set(), groups: new Set(), families: new Set() },
@@ -88,6 +89,7 @@ const btnAiContext = $('btn-ai-context');
 const btnCopyAiContext = $('btn-copy-ai-context');
 const btnToggleFavorite = $('btn-toggle-favorite');
 const btnCreateFolder = $('btn-create-folder');
+const btnClearFolderFilter = $('btn-clear-folder-filter');
 const viewModeSelect = $('view-mode');
 const editorToolbar = $('editor-toolbar');
 const draftBadge = $('draft-badge');
@@ -214,6 +216,7 @@ function wireToolbar() {
   });
   btnToggleFavorite.addEventListener('click', toggleSelectedFavorite);
   btnCreateFolder.addEventListener('click', () => openFolderModal());
+  btnClearFolderFilter.addEventListener('click', clearFolderFilter);
 
   btnCopyAiContext.addEventListener('click', () => copyText(AI_CONTEXT_PROMPT));
   btnExportBinTop.addEventListener('click', exportDraft);
@@ -476,6 +479,15 @@ function getVisibleState() {
     });
     if (visible.length !== before) {
       reasons.push('search active');
+    }
+  }
+
+  if (state.selectedFolderId) {
+    const before = visible.length;
+    visible = visible.filter(table => tableMatchesFolder(table, state.selectedFolderId));
+    if (visible.length !== before) {
+      const folder = (state.preferences.folders || []).find(item => item.id === state.selectedFolderId);
+      reasons.push(`folder: ${(folder && folder.name) || 'saved set'}`);
     }
   }
 
@@ -1929,7 +1941,7 @@ async function loadPreferences() {
     }
     const data = await response.json();
     state.preferences = normalizePreferences(data);
-    renderFolderList();
+  renderFolderList();
   } catch (_error) {
     // Keep defaults if preferences are unavailable.
   }
@@ -2008,6 +2020,7 @@ function renderFolderList() {
   const selected = state.tables.find(item => item.table_id === state.selectedTableId);
   const selectedKey = selected ? getTablePreferenceKey(selected) : null;
   const assignments = state.preferences.assignments || {};
+  btnClearFolderFilter.style.display = state.selectedFolderId ? '' : 'none';
   folderList.innerHTML = '';
   if (!(state.preferences.folders || []).length) {
     folderList.innerHTML = '<div class="folder-empty">No folders yet. Create one to group your favorite tables for new-map workflows.</div>';
@@ -2021,18 +2034,30 @@ function renderFolderList() {
     const assigned = selectedKey && (assignedKeys.includes(selectedKey) || (selectedFamilyKey && assignedKeys.includes(selectedFamilyKey)));
     row.innerHTML = `
       <div class="folder-row__info">
-        <button class="folder-row__name" type="button">${escapeHtml(folder.name)}</button>
+        <button class="folder-row__name${state.selectedFolderId === folder.id ? ' is-active' : ''}" type="button">${escapeHtml(folder.name)}</button>
         <span class="folder-row__count">${assignedKeys.length}</span>
       </div>
       <div class="folder-row__actions">
         <button class="editor-mini-btn" type="button" data-folder-assign="${escapeHtml(folder.id)}" ${selectedKey ? '' : 'disabled'}>${assigned ? 'Remove' : 'Add'}</button>
         <button class="editor-mini-btn" type="button" data-folder-quick="${escapeHtml(folder.id)}">Quick Add</button>
       </div>`;
-    row.querySelector('.folder-row__name').addEventListener('click', () => openFolderModal(folder.id));
+    row.querySelector('.folder-row__name').addEventListener('click', () => {
+      state.selectedFolderId = state.selectedFolderId === folder.id ? null : folder.id;
+      renderList();
+    });
+    row.querySelector('.folder-row__name').addEventListener('contextmenu', event => {
+      event.preventDefault();
+      openFolderModal(folder.id);
+    });
     row.querySelector('[data-folder-assign]').addEventListener('click', () => toggleFolderAssignment(folder.id));
     row.querySelector('[data-folder-quick]').addEventListener('click', () => openQuickAddModal(folder.id));
     folderList.appendChild(row);
   });
+}
+
+function clearFolderFilter() {
+  state.selectedFolderId = null;
+  renderList();
 }
 
 function toggleFolderAssignment(folderId) {
@@ -2215,6 +2240,13 @@ function getAssignedFoldersMarkup(table) {
     return '<div class="desc-short">Not saved in a custom folder yet.</div>';
   }
   return `<div class="folder-chip-list">${assigned.map(folder => `<span class="folder-chip">${escapeHtml(folder.name)}</span>`).join('')}</div>`;
+}
+
+function tableMatchesFolder(table, folderId) {
+  const keys = state.preferences.assignments[folderId] || [];
+  const tableKey = getTablePreferenceKey(table);
+  const familyKey = getFamilyPreferenceKey(table);
+  return keys.includes(tableKey) || keys.includes(familyKey);
 }
 
 function closeMetadataModal() {

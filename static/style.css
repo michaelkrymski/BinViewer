@@ -2045,6 +2045,11 @@ header {
   cursor: pointer;
 }
 
+.folder-row__name.is-active {
+  color: #bfdbfe;
+  text-decoration: underline;
+}
+
 .folder-row__count,
 .family-counter,
 .group-counter {

@@ -32,6 +32,7 @@
 - Reworked breakpoint editing toward a one-axis-at-a-time vertical list and fixed the main layout scroll/overflow traps that were clipping the inspector on larger tables.
 - Added a quick-add folder modal with search and bulk checkbox assignment for tables and families.
 - Added friendlier XDF format detection so binary/proprietary XDF files fail with a clear message instead of a raw XML parser traceback.
+- Added a first-class CLI `compare` command for mapped table diffs plus raw byte ranges, and made folders act as a real browse filter in the workspace.
 
 ## In Progress
 - WIP: Polish favorites/folder management so family-level starring, folder ordering, and richer assignment controls feel complete in the new shell.
@@ -70,3 +71,5 @@
 - 2026-04-09: `node --check static/app.js` passed after adding quick-add folder modal wiring.
 - 2026-04-09: Flask test-client `GET /` confirmed the quick-add modal markup is present in the rendered workspace shell.
 - 2026-04-09: Binary/proprietary XDF detection verified against `Oil_Pressure_Tables_000021571DAA01_DEV.xdf`; parser now returns a clean user-facing format error and `/api/parse` returns `400`.
+- 2026-04-09: `tuner_cli.py compare` verified against `000021571DAA01.xdf`, `Stock_TestCLI.bin`, and `Stock_TestCLIManual.bin`, returning mapped changed tables plus raw diff ranges.
+- 2026-04-09: Flask test-client `GET /` confirmed the folder filter controls are present in the workspace shell.
