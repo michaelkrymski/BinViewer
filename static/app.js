@@ -1,7 +1,6 @@
 ﻿'use strict';
 
 const WORKFLOW_BUCKET_ORDER = [
-  'Quick Start',
   'Boost / WGDC',
   'Fueling / Ethanol',
   'Ignition',
@@ -16,7 +15,7 @@ const WORKFLOW_BUCKET_ORDER = [
 const METADATA_STORAGE_KEY = 'tunerpro-viewer.metadata-overrides.v1';
 
 const state = {
-  files: { xdf: null, bin: null, bin2: null },
+  files: { xdf: null, bin: null },
   tables: [],
   categories: {},
   search: '',
@@ -31,6 +30,8 @@ const state = {
   previews: {},
   editorForms: {},
   axisDrafts: {},
+  preferences: { favorites: { tables: [], families: [] }, folders: [], assignments: {} },
+  editingFolderId: null,
   metadataOverrides: loadMetadataOverrides(),
   editingMetadataTableId: null,
   openState: { cards: new Set(), groups: new Set(), families: new Set() },
@@ -55,13 +56,13 @@ HOW TO INTERPRET IT
 When I paste a table, respond like a tuning-aware assistant that understands ECU maps, ignition, fueling, boost control, torque modeling, and limiters.`;
 
 const $ = id => document.getElementById(id);
-const uploadPanel = $('upload-panel');
 const resultsArea = $('results-area');
 const tableList = $('table-list');
 const mapTabs = $('map-tabs');
 const categoryNav = $('category-nav');
 const categoryTabs = $('category-tabs');
 const workspaceOverview = $('workspace-overview');
+const workspaceEmpty = $('workspace-empty');
 const inspectorEmpty = $('inspector-empty');
 const inspectorPanel = $('inspector-panel');
 const inspectorHeader = $('inspector-header');
@@ -75,7 +76,6 @@ const progressBar = $('progress-bar');
 const progressFill = $('progress-fill');
 const uploadError = $('upload-error');
 const btnParse = $('btn-parse');
-const btnClear = $('btn-clear');
 const btnDebug = $('btn-debug');
 const btnHideAutogen = $('btn-hide-autogen');
 const btnCollapseAll = $('btn-collapse-all');
@@ -83,6 +83,8 @@ const btnExportBinTop = $('btn-export-bin-top');
 const btnNewFiles = $('btn-new-files');
 const btnAiContext = $('btn-ai-context');
 const btnCopyAiContext = $('btn-copy-ai-context');
+const btnToggleFavorite = $('btn-toggle-favorite');
+const btnCreateFolder = $('btn-create-folder');
 const viewModeSelect = $('view-mode');
 const editorToolbar = $('editor-toolbar');
 const draftBadge = $('draft-badge');
@@ -103,6 +105,11 @@ const metadataShortInput = $('metadata-short');
 const metadataLongInput = $('metadata-long');
 const btnMetadataSave = $('metadata-save');
 const btnMetadataReset = $('metadata-reset');
+const folderList = $('folder-list');
+const folderModal = $('folder-modal');
+const folderNameInput = $('folder-name');
+const btnFolderSave = $('folder-save');
+const btnFolderDelete = $('folder-delete');
 
 let debugTables = [];
 let dragSelection = null;
@@ -113,16 +120,18 @@ function init() {
   wireDropZones();
   wireToolbar();
   wireModals();
+  loadPreferences();
   updateParseBtn();
   syncHideAutogenButton();
   updateDraftToolbar();
   aiContextText.textContent = AI_CONTEXT_PROMPT;
   viewModeSelect.value = state.viewMode;
   window.addEventListener('mouseup', () => { dragSelection = null; });
+  renderResults();
 }
 
 function wireDropZones() {
-  ['xdf', 'bin', 'bin2'].forEach(key => {
+  ['xdf', 'bin'].forEach(key => {
     const zone = $(`drop-${key}`);
     const input = $(`input-${key}`);
 
@@ -158,7 +167,6 @@ function wireDropZones() {
 function wireToolbar() {
   btnParse.addEventListener('click', doParse);
   btnDebug.addEventListener('click', doDebug);
-  btnClear.addEventListener('click', resetAll);
   btnNewFiles.addEventListener('click', resetAll);
 
   searchInput.addEventListener('input', () => {
@@ -193,6 +201,8 @@ function wireToolbar() {
   btnAiContext.addEventListener('click', () => {
     aiContextModal.style.display = 'flex';
   });
+  btnToggleFavorite.addEventListener('click', toggleSelectedFavorite);
+  btnCreateFolder.addEventListener('click', () => openFolderModal());
 
   btnCopyAiContext.addEventListener('click', () => copyText(AI_CONTEXT_PROMPT));
   btnExportBinTop.addEventListener('click', exportDraft);
@@ -206,6 +216,7 @@ function wireModals() {
   $('debug-close').addEventListener('click', () => { debugModal.style.display = 'none'; });
   $('ai-context-close').addEventListener('click', () => { aiContextModal.style.display = 'none'; });
   $('metadata-close').addEventListener('click', closeMetadataModal);
+  $('folder-close').addEventListener('click', closeFolderModal);
 
   debugModal.addEventListener('click', event => {
     if (event.target === debugModal) {
@@ -224,9 +235,16 @@ function wireModals() {
       closeMetadataModal();
     }
   });
+  folderModal.addEventListener('click', event => {
+    if (event.target === folderModal) {
+      closeFolderModal();
+    }
+  });
 
   btnMetadataSave.addEventListener('click', saveMetadataOverride);
   btnMetadataReset.addEventListener('click', clearMetadataOverride);
+  btnFolderSave.addEventListener('click', saveFolder);
+  btnFolderDelete.addEventListener('click', deleteFolder);
 
   debugSearch.addEventListener('input', () => renderDebugOutput(debugTables));
 }
@@ -257,9 +275,6 @@ async function doParse() {
   const formData = new FormData();
   formData.append('xdf', state.files.xdf);
   formData.append('bin', state.files.bin);
-  if (state.files.bin2) {
-    formData.append('bin2', state.files.bin2);
-  }
 
   try {
     let pct = 10;
@@ -285,6 +300,9 @@ async function doParse() {
     state.previews = {};
     state.editorForms = {};
     state.axisDrafts = {};
+    if (data.preferences) {
+      state.preferences = normalizePreferences(data.preferences);
+    }
 
     setTimeout(() => {
       showProgress(false);
@@ -345,16 +363,17 @@ function renderDebugOutput(tables) {
 }
 
 function renderResults() {
-  uploadPanel.style.display = 'none';
   resultsArea.style.display = '';
-  editorToolbar.style.display = '';
-  btnClear.style.display = '';
-  headerMeta.textContent = `${state.files.xdf?.name || ''} � ${state.files.bin?.name || ''} � ${state.tables.length} definitions`;
+  const loaded = Boolean(state.tables.length && state.files.xdf && state.files.bin);
+  headerMeta.textContent = loaded
+    ? `${state.files.xdf?.name || ''} · ${state.files.bin?.name || ''} · ${state.tables.length} definitions`
+    : 'No files loaded';
   viewModeSelect.value = state.viewMode;
   if (!state.selectedCategory) {
-    state.selectedCategory = WORKFLOW_BUCKET_ORDER[0];
+    state.selectedCategory = WORKFLOW_BUCKET_ORDER[0] || 'Boost / WGDC';
   }
   updateDraftToolbar();
+  renderFolderList();
   renderList();
 }
 
@@ -370,6 +389,14 @@ function renderList() {
   categoryNav.innerHTML = '';
   mapPanel.style.display = state.viewMode === 'workflow' ? '' : 'none';
   categoryPanel.style.display = state.viewMode === 'workflow' ? '' : 'none';
+  workspaceEmpty.style.display = state.tables.length ? 'none' : '';
+  btnToggleFavorite.disabled = !state.selectedTableId;
+  renderFolderList();
+
+  if (!state.tables.length) {
+    renderInspector();
+    return;
+  }
 
   if (!visible.length) {
     tableList.innerHTML = '<div class="no-results"><div>No tables match your filter.</div></div>';
@@ -558,14 +585,8 @@ function renderWorkflowOverview(mapTables, categories) {
     .filter(table => isGeneralMapSetting(table))
     .sort(compareTables)
     .slice(0, 5);
-  const hotTables = mapTables
-    .filter(table => !table.low_priority_reason && (table.workflow_bucket || 'Other') !== 'Quick Start')
-    .sort(compareTables)
-    .slice(0, 6);
-  const quickStartTables = mapTables
-    .filter(table => (table.workflow_bucket || 'Other') === 'Quick Start')
-    .sort(compareTables)
-    .slice(0, 6);
+  const favoriteTables = getFavoriteTables(mapTables).slice(0, 8);
+  const folderCount = (state.preferences.folders || []).length;
 
   workspaceOverview.innerHTML = `
     <div class="overview-card">
@@ -592,46 +613,31 @@ function renderWorkflowOverview(mapTables, categories) {
       <div class="overview-pills overview-pills--general"></div>
     </div>
     <div class="overview-card">
-      <div class="overview-card__eyebrow">Quick Start</div>
-      <div class="overview-card__title">Starter tables for a fresh map revision</div>
+      <div class="overview-card__eyebrow">Favorites</div>
+      <div class="overview-card__title">Starred tables and custom folders</div>
       <div class="overview-summary">
         <div class="overview-stat">
-          <span class="overview-stat__value">${quickStartTables.length}</span>
-          <span class="overview-stat__label">Pinned Tables</span>
+          <span class="overview-stat__value">${favoriteTables.length}</span>
+          <span class="overview-stat__label">Starred Rows</span>
         </div>
         <div class="overview-stat">
-          <span class="overview-stat__value">${categories.find(category => category.bucket === 'Quick Start')?.tables.length || 0}</span>
-          <span class="overview-stat__label">Quick Start Rows</span>
+          <span class="overview-stat__value">${folderCount}</span>
+          <span class="overview-stat__label">Custom Folders</span>
         </div>
       </div>
-      <div class="overview-pills overview-pills--quick-start"></div>
-    </div>
-    <div class="overview-card">
-      <div class="overview-card__eyebrow">Hot Tables</div>
-      <div class="overview-card__title">Most useful for this map right now</div>
-      <div class="overview-summary">
-        ${categories.slice(0, 4).map(category => `
-          <div class="overview-stat">
-            <span class="overview-stat__value">${category.familyCount}</span>
-            <span class="overview-stat__label">${escapeHtml(shortBucketLabel(category.bucket))}</span>
-          </div>`).join('')}
-      </div>
-      <div class="overview-pills overview-pills--hot"></div>
+      <div class="overview-pills overview-pills--favorites"></div>
     </div>`;
 
   const generalWrap = workspaceOverview.querySelector('.overview-pills--general');
-  const quickStartWrap = workspaceOverview.querySelector('.overview-pills--quick-start');
-  const hotWrap = workspaceOverview.querySelector('.overview-pills--hot');
+  const favoriteWrap = workspaceOverview.querySelector('.overview-pills--favorites');
 
-  (generalTables.length ? generalTables : hotTables.slice(0, 4)).forEach(table => {
+  generalTables.forEach(table => {
     generalWrap.appendChild(buildOverviewPill(table));
   });
-  quickStartTables.forEach(table => {
-    quickStartWrap.appendChild(buildOverviewPill(table));
-  });
-  hotTables.forEach(table => {
-    hotWrap.appendChild(buildOverviewPill(table));
-  });
+  favoriteTables.forEach(table => favoriteWrap.appendChild(buildOverviewPill(table)));
+  if (!favoriteTables.length) {
+    favoriteWrap.innerHTML = '<div class="overview-empty">Star tables or families to keep them within easy reach across sessions.</div>';
+  }
 }
 
 function buildOverviewPill(table) {
@@ -640,7 +646,7 @@ function buildOverviewPill(table) {
   button.className = 'overview-pill';
   button.innerHTML = `${getOverviewMapBadge(table)}<span>${escapeHtml(getDisplayTitle(table))}</span>`;
   button.addEventListener('click', () => {
-    state.selectedCategory = table.workflow_bucket || state.selectedCategory;
+    state.selectedCategory = table.workflow_bucket || state.selectedCategory || WORKFLOW_BUCKET_ORDER[0];
     selectTable(table.table_id);
   });
   return button;
@@ -682,15 +688,17 @@ function getOverviewMapBadge(table) {
 
 function isGeneralMapSetting(table) {
   const text = `${table.workflow_bucket || ''} ${table.title || ''} ${table.family_title || ''}`.toLowerCase();
-  if (isGlobalTable(table) || (table.workflow_bucket || '') === 'Map Switching / Multi-map') {
+  if (text.includes('commanded wgdc')) {
+    return false;
+  }
+  if ((table.workflow_bucket || '') === 'Map Switching / Multi-map') {
     return true;
   }
-  return ['ethanol', 'switch', 'slot', 'map', 'flex', 'global'].some(keyword => text.includes(keyword));
+  return ['ethanol', 'switch', 'slot', 'map', 'flex', 'fuel scalar', 'static ethanol'].some(keyword => text.includes(keyword));
 }
 
 function shortBucketLabel(bucket) {
   return String(bucket)
-    .replace('Quick Start', 'Quick Start')
     .replace(' / WGDC', '')
     .replace(' / Ethanol', '')
     .replace(' / Limits', '')
@@ -716,6 +724,7 @@ function ensureSelectedTable(tables) {
       col_end: Math.max(selected.cols - 1, 0),
     };
   }
+  btnToggleFavorite.disabled = !state.selectedTableId;
 }
 
 function selectTable(tableId) {
@@ -729,6 +738,7 @@ function selectTable(tableId) {
       col_end: Math.max(table.cols - 1, 0),
     };
   }
+  btnToggleFavorite.disabled = !state.selectedTableId;
   renderList();
 }
 
@@ -740,7 +750,7 @@ function updateDraftToolbar() {
 
   if (!session) {
     draftBadge.textContent = 'Draft Unloaded';
-    draftMeta.textContent = '0 pending edits � 0 dirty tables';
+    draftMeta.textContent = '0 pending edits · 0 dirty tables';
     btnUndoDraft.disabled = true;
     btnResetDraft.disabled = true;
     btnExportDraft.disabled = true;
@@ -1160,6 +1170,7 @@ function renderInspector(visibleTables = []) {
   const variantMeta = selected.variant_label ? `<span>${escapeHtml(selected.variant_label)}</span>` : '';
   const categoryMeta = selected.workflow_bucket ? `<span>${escapeHtml(selected.workflow_bucket)}</span>` : '';
   const changeMeta = selected.change_count ? `<span>${selected.change_count} edits</span>` : '';
+  const favoriteLabel = isFavoriteTable(selected) ? 'Unstar' : 'Star';
 
   inspectorHeader.innerHTML = `
     <div class="inspector-panel__title">
@@ -1178,20 +1189,18 @@ function renderInspector(visibleTables = []) {
     <div class="inspector-panel__actions">
       <button class="btn btn-ghost btn-sm inspector-copy" type="button">Copy for AI</button>
       <button class="btn btn-ghost btn-sm inspector-meta" type="button">Edit Metadata</button>
-      <button class="btn btn-ghost btn-sm inspector-ai" type="button">AI Context</button>
+      <button class="btn btn-ghost btn-sm inspector-favorite" type="button">${favoriteLabel}</button>
     </div>`;
 
   const descriptionMarkup = buildDescriptionBlock(selected) || '<div class="desc-short">No description available yet for this table.</div>';
-  const editMarkup = selected.editable && !selected.error
-    ? buildEditorPanel(selected)
-    : '<div class="desc-short">This table is currently read-only.</div>';
   const axisMarkup = buildAxisEditors(selected) || '<div class="desc-short">No editable embedded breakpoints are available for this table.</div>';
   const familyMeta = selected.family_title && selected.family_title !== selected.title
     ? `<div class="desc-short">Family: ${escapeHtml(selected.family_title)}</div>`
     : '';
   const categoryPath = (selected.primary_category_path || []).length
-    ? `<div class="desc-long">${escapeHtml((selected.primary_category_path || []).join(' � '))}</div>`
+    ? `<div class="desc-long">${escapeHtml((selected.primary_category_path || []).join(' > '))}</div>`
     : '';
+  const favoriteFolders = getAssignedFoldersMarkup(selected);
 
   inspectorBody.innerHTML = `
     <section class="inspector-section">
@@ -1199,8 +1208,8 @@ function renderInspector(visibleTables = []) {
       ${descriptionMarkup}
     </section>
     <section class="inspector-section">
-      <div class="inspector-section__title">Editing</div>
-      ${editMarkup}
+      <div class="inspector-section__title">Saved Organization</div>
+      ${favoriteFolders}
     </section>
     <section class="inspector-section">
       <div class="inspector-section__title">Axis Tools</div>
@@ -1215,13 +1224,8 @@ function renderInspector(visibleTables = []) {
 
   inspectorHeader.querySelector('.inspector-copy').addEventListener('click', () => copyForAI(selected));
   inspectorHeader.querySelector('.inspector-meta').addEventListener('click', () => openMetadataModal(selected.table_id));
-  inspectorHeader.querySelector('.inspector-ai').addEventListener('click', () => {
-    aiContextModal.style.display = 'flex';
-  });
-
-  if (selected.editable && !selected.error) {
-    wireEditableScope(inspectorPanel, selected, { hasCellGrid: false });
-  }
+  inspectorHeader.querySelector('.inspector-favorite').addEventListener('click', () => toggleFavoriteForTable(selected));
+  wireEditableScope(inspectorPanel, selected, { hasCellGrid: false });
 }
 
 function isScalarTable(table) {
@@ -1256,7 +1260,7 @@ function buildEditorPanel(table) {
   const showValue = !String(formState.operation).startsWith('interpolate');
   const previewSummary = preview ? `
     <div class="editor-preview-copy">
-      ${preview.summary.changed_cell_count} cells � delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
+      ${preview.summary.changed_cell_count} cells · delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
     </div>
     ${(preview.changes || []).slice(0, 6).map(change => `
       <div class="editor-preview-line">
@@ -1297,11 +1301,17 @@ function buildBody(table, { includeAxisEditors = true } = {}) {
   if (!table.rows) {
     return '<div class="card-error-msg">No data extracted.</div>';
   }
-  const axisEditors = includeAxisEditors ? buildAxisEditors(table) : '';
   if (isScalarTable(table)) {
-    return `${axisEditors}${buildScalar(table)}`;
+    return `${buildInlineEditorBar(table)}${buildScalar(table)}`;
   }
-  return `${axisEditors}${buildTable(table)}`;
+  return `${buildInlineEditorBar(table)}${buildTable(table)}`;
+}
+
+function buildInlineEditorBar(table) {
+  if (!table.editable || table.error) {
+    return '';
+  }
+  return buildEditorPanel(table);
 }
 
 function buildScalar(table) {
@@ -1381,7 +1391,16 @@ function buildAxisEditors(table) {
   if (!xEditor && !yEditor) {
     return '';
   }
-  return `<div class="axis-editor-wrap">${xEditor}${yEditor}</div>`;
+  const activeAxis = state.axisDrafts[table.table_id]?.activeAxis || (xEditor ? 'x' : 'y');
+  return `
+    <div class="axis-editor-wrap" data-table-id="${escapeHtml(table.table_id)}">
+      <div class="axis-toggle">
+        ${xEditor ? `<button class="axis-toggle__btn${activeAxis === 'x' ? ' is-active' : ''}" type="button" data-axis-tab="x">X Axis</button>` : ''}
+        ${yEditor ? `<button class="axis-toggle__btn${activeAxis === 'y' ? ' is-active' : ''}" type="button" data-axis-tab="y">Y Axis</button>` : ''}
+      </div>
+      ${xEditor ? `<div class="axis-editor-panel${activeAxis === 'x' ? ' is-active' : ''}" data-axis-panel="x">${xEditor}</div>` : ''}
+      ${yEditor ? `<div class="axis-editor-panel${activeAxis === 'y' ? ' is-active' : ''}" data-axis-panel="y">${yEditor}</div>` : ''}
+    </div>`;
 }
 
 function buildAxisEditor(table, axisName) {
@@ -1399,7 +1418,7 @@ function buildAxisEditor(table, axisName) {
         <button class="editor-mini-btn" type="button" data-axis-action="reset" data-axis-name="${axisName}">Reset ${axisLabel}</button>
         <button class="btn btn-ghost btn-sm" type="button" data-axis-action="apply" data-axis-name="${axisName}">Apply ${axisLabel} Axis</button>
       </div>
-      <div class="axis-editor__inputs">
+      <div class="axis-editor__inputs axis-editor__inputs--vertical">
         ${draftValues.map((value, index) => `
           <label class="axis-editor__item">
             <span>${axisLabel}${index + 1}</span>
@@ -1424,7 +1443,7 @@ function formatSelectionLabel(selection, table) {
   if (!selection) {
     return 'Selection: none';
   }
-  return `Selection: R${selection.row_start + 1}-${selection.row_end + 1} � C${selection.col_start + 1}-${selection.col_end + 1} of ${table.rows}x${table.cols}`;
+  return `Selection: R${selection.row_start + 1}-${selection.row_end + 1} · C${selection.col_start + 1}-${selection.col_end + 1} of ${table.rows}x${table.cols}`;
 }
 
 function buildPreviewLookup(tableId) {
@@ -1514,6 +1533,12 @@ function wireEditableCard(card, table) {
       delete state.previews[tableId];
       refreshEditableCard(card, table);
     });
+
+    cell.addEventListener('dblclick', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      beginInlineCellEdit(cell, table);
+    });
   });
 }
 
@@ -1573,11 +1598,22 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
       await runEditorAction(tableId, true);
     });
 
-    panel.querySelector('.editor-apply-btn').addEventListener('click', async event => {
+  panel.querySelector('.editor-apply-btn').addEventListener('click', async event => {
       event.stopPropagation();
       await runEditorAction(tableId, false);
-    });
+  });
   }
+
+  container.querySelectorAll('[data-axis-tab]').forEach(button => {
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      if (!state.axisDrafts[tableId]) {
+        state.axisDrafts[tableId] = {};
+      }
+      state.axisDrafts[tableId].activeAxis = button.dataset.axisTab;
+      renderList();
+    });
+  });
 
   container.querySelectorAll('.axis-input').forEach(input => {
     input.addEventListener('input', event => {
@@ -1586,6 +1622,18 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
       const values = [...getAxisDraft(table, axisName)];
       values[index] = Number(event.target.value);
       state.axisDrafts[tableId][axisName] = values;
+    });
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        input.blur();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        const axisName = input.dataset.axisName;
+        const index = Number(input.dataset.axisIndex);
+        input.value = getAxisDraft(table, axisName)[index];
+        input.blur();
+      }
     });
   });
 
@@ -1622,6 +1670,50 @@ function refreshEditableCard(card, table) {
     const col = Number(cell.dataset.col);
     cell.classList.toggle('is-selected', selectionContains(selection, row, col));
     cell.classList.toggle('is-preview', previewLookup.has(`${row}:${col}`));
+  });
+}
+
+function beginInlineCellEdit(cell, table) {
+  if (cell.querySelector('.inline-cell-input') || table.has_diff) {
+    return;
+  }
+  const row = Number(cell.dataset.row);
+  const col = Number(cell.dataset.col);
+  const current = (table.grid[row] || [])[col];
+  const original = Number.isFinite(Number(current)) ? String(current) : '';
+  cell.dataset.originalValue = cell.innerHTML;
+  cell.classList.add('is-editing');
+  cell.innerHTML = `<input class="inline-cell-input" type="number" step="any" value="${escapeHtml(original)}" />`;
+  const input = cell.querySelector('.inline-cell-input');
+  input.focus();
+  input.select();
+
+  const cancel = () => {
+    cell.classList.remove('is-editing');
+    cell.innerHTML = cell.dataset.originalValue || escapeHtml(formatNumber(current));
+  };
+
+  input.addEventListener('keydown', async event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) {
+        showToast('Enter a valid numeric value.');
+        return;
+      }
+      state.selections[table.table_id] = { row_start: row, row_end: row, col_start: col, col_end: col };
+      state.editorForms[table.table_id] = { operation: 'set_cells', value };
+      await runEditorAction(table.table_id, false);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancel();
+    }
+  });
+
+  input.addEventListener('blur', () => {
+    if (cell.classList.contains('is-editing')) {
+      cancel();
+    }
   });
 }
 
@@ -1801,6 +1893,186 @@ function openMetadataModal(tableId) {
   metadataModal.style.display = 'flex';
 }
 
+async function loadPreferences() {
+  try {
+    const response = await fetch('/api/preferences');
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    state.preferences = normalizePreferences(data);
+    renderFolderList();
+  } catch (_error) {
+    // Keep defaults if preferences are unavailable.
+  }
+}
+
+function normalizePreferences(payload) {
+  const favorites = payload?.favorites || {};
+  return {
+    favorites: {
+      tables: Array.isArray(favorites.tables) ? favorites.tables : [],
+      families: Array.isArray(favorites.families) ? favorites.families : [],
+    },
+    folders: Array.isArray(payload?.folders) ? payload.folders : [],
+    assignments: payload?.assignments && typeof payload.assignments === 'object' ? payload.assignments : {},
+  };
+}
+
+async function savePreferences() {
+  const response = await fetch('/api/preferences', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state.preferences),
+  });
+  const data = await response.json().catch(() => state.preferences);
+  if (response.ok) {
+    state.preferences = normalizePreferences(data);
+    renderFolderList();
+    renderList();
+  } else {
+    showToast(data.error || 'Could not save preferences.');
+  }
+}
+
+function getTablePreferenceKey(table) {
+  return table.preference_key || normalizeText(table.title || table.table_id);
+}
+
+function getFamilyPreferenceKey(table) {
+  return table.family_key || normalizeText(table.family_title || table.title || table.table_id);
+}
+
+function isFavoriteTable(table) {
+  return state.preferences.favorites.tables.includes(getTablePreferenceKey(table))
+    || state.preferences.favorites.families.includes(getFamilyPreferenceKey(table));
+}
+
+function getFavoriteTables(tables) {
+  return [...tables].filter(isFavoriteTable).sort(compareTables);
+}
+
+function toggleSelectedFavorite() {
+  const table = state.tables.find(item => item.table_id === state.selectedTableId);
+  if (table) {
+    toggleFavoriteForTable(table);
+  }
+}
+
+function toggleFavoriteForTable(table) {
+  const key = getTablePreferenceKey(table);
+  const items = new Set(state.preferences.favorites.tables);
+  if (items.has(key)) {
+    items.delete(key);
+    showToast('Removed from favorites.');
+  } else {
+    items.add(key);
+    showToast('Added to favorites.');
+  }
+  state.preferences.favorites.tables = [...items];
+  savePreferences();
+}
+
+function renderFolderList() {
+  if (!folderList) {
+    return;
+  }
+  const selected = state.tables.find(item => item.table_id === state.selectedTableId);
+  const selectedKey = selected ? getTablePreferenceKey(selected) : null;
+  const assignments = state.preferences.assignments || {};
+  folderList.innerHTML = '';
+  if (!(state.preferences.folders || []).length) {
+    folderList.innerHTML = '<div class="folder-empty">No folders yet. Create one to group your favorite tables for new-map workflows.</div>';
+    return;
+  }
+  state.preferences.folders.forEach(folder => {
+    const row = document.createElement('div');
+    row.className = 'folder-row';
+    const assigned = selectedKey && Array.isArray(assignments[folder.id]) && assignments[folder.id].includes(selectedKey);
+    row.innerHTML = `
+      <div class="folder-row__info">
+        <button class="folder-row__name" type="button">${escapeHtml(folder.name)}</button>
+        <span class="folder-row__count">${Array.isArray(assignments[folder.id]) ? assignments[folder.id].length : 0}</span>
+      </div>
+      <div class="folder-row__actions">
+        <button class="editor-mini-btn" type="button" data-folder-assign="${escapeHtml(folder.id)}" ${selectedKey ? '' : 'disabled'}>${assigned ? 'Remove' : 'Add'}</button>
+      </div>`;
+    row.querySelector('.folder-row__name').addEventListener('click', () => openFolderModal(folder.id));
+    row.querySelector('[data-folder-assign]').addEventListener('click', () => toggleFolderAssignment(folder.id));
+    folderList.appendChild(row);
+  });
+}
+
+function toggleFolderAssignment(folderId) {
+  const selected = state.tables.find(item => item.table_id === state.selectedTableId);
+  if (!selected) {
+    showToast('Select a table first.');
+    return;
+  }
+  const key = getTablePreferenceKey(selected);
+  const current = new Set(state.preferences.assignments[folderId] || []);
+  if (current.has(key)) {
+    current.delete(key);
+  } else {
+    current.add(key);
+  }
+  state.preferences.assignments[folderId] = [...current];
+  savePreferences();
+}
+
+function openFolderModal(folderId = null) {
+  state.editingFolderId = folderId;
+  const folder = (state.preferences.folders || []).find(item => item.id === folderId);
+  folderNameInput.value = folder?.name || '';
+  btnFolderDelete.style.display = folder ? '' : 'none';
+  folderModal.style.display = 'flex';
+}
+
+function closeFolderModal() {
+  folderModal.style.display = 'none';
+  state.editingFolderId = null;
+  folderNameInput.value = '';
+}
+
+function saveFolder() {
+  const name = folderNameInput.value.trim();
+  if (!name) {
+    showToast('Enter a folder name.');
+    return;
+  }
+  const folders = [...(state.preferences.folders || [])];
+  if (state.editingFolderId) {
+    const folder = folders.find(item => item.id === state.editingFolderId);
+    if (folder) {
+      folder.name = name;
+    }
+  } else {
+    folders.push({ id: `folder-${Date.now()}`, name });
+  }
+  state.preferences.folders = folders;
+  closeFolderModal();
+  savePreferences();
+}
+
+function deleteFolder() {
+  if (!state.editingFolderId) {
+    return;
+  }
+  state.preferences.folders = (state.preferences.folders || []).filter(item => item.id !== state.editingFolderId);
+  delete state.preferences.assignments[state.editingFolderId];
+  closeFolderModal();
+  savePreferences();
+}
+
+function getAssignedFoldersMarkup(table) {
+  const key = getTablePreferenceKey(table);
+  const assigned = (state.preferences.folders || []).filter(folder => (state.preferences.assignments[folder.id] || []).includes(key));
+  if (!assigned.length) {
+    return '<div class="desc-short">Not saved in a custom folder yet.</div>';
+  }
+  return `<div class="folder-chip-list">${assigned.map(folder => `<span class="folder-chip">${escapeHtml(folder.name)}</span>`).join('')}</div>`;
+}
+
 function closeMetadataModal() {
   metadataModal.style.display = 'none';
   state.editingMetadataTableId = null;
@@ -1917,7 +2189,7 @@ function copyText(text) {
 }
 
 function resetAll() {
-  state.files = { xdf: null, bin: null, bin2: null };
+  state.files = { xdf: null, bin: null };
   state.tables = [];
   state.categories = {};
   state.search = '';
@@ -1928,27 +2200,28 @@ function resetAll() {
   state.previews = {};
   state.editorForms = {};
   state.axisDrafts = {};
+  state.selectedTableId = null;
+  state.selectedCategory = null;
   searchInput.value = '';
   searchClear.style.display = 'none';
   viewModeSelect.value = state.viewMode;
 
-  ['xdf', 'bin', 'bin2'].forEach(key => {
+  ['xdf', 'bin'].forEach(key => {
     $(`input-${key}`).value = '';
-    $(`status-${key}`).textContent = 'No file selected';
+    $(`status-${key}`).textContent = key === 'xdf' ? 'No XDF selected' : 'No BIN selected';
     $(`drop-${key}`).classList.remove('has-file');
   });
 
-  uploadPanel.style.display = '';
-  resultsArea.style.display = 'none';
-  editorToolbar.style.display = 'none';
-  btnClear.style.display = 'none';
   headerMeta.textContent = '';
   countBadge.textContent = '0 / 0 shown';
   tableList.innerHTML = '';
+  workspaceOverview.innerHTML = '';
+  folderList.innerHTML = '';
   hideError();
   syncHideAutogenButton();
   updateDraftToolbar();
   updateParseBtn();
+  renderResults();
 }
 
 function showProgress(show) {
@@ -2007,6 +2280,10 @@ function escapeHtml(value) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function normalizeText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 

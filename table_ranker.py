@@ -29,7 +29,6 @@ LOW_PRIORITY_RULES = [
 ]
 
 BUCKET_ORDER = [
-    "Quick Start",
     "Boost / WGDC",
     "Fueling / Ethanol",
     "Ignition",
@@ -39,45 +38,6 @@ BUCKET_ORDER = [
     "Diagnostics / Display / Utility",
     "Other",
     "Low Priority",
-]
-
-QUICK_START_RULES = [
-    "wgdc base",
-    "wgdc p-factor",
-    "wgdc d-factor",
-    "commanded wgdc",
-    "boost ceiling",
-    "fuel (bank 1)",
-    "fuel (bank 2)",
-    "fuel (main)",
-    "fuel (spool)",
-    "fuel scalar",
-    "max fuel scalar",
-    "lambda target min",
-    "lambda limit rich",
-    "fuel start",
-    "timing (main)",
-    "timing (cold)",
-    "timing (spool)",
-    "timing cor. factor",
-    "knock reco.",
-    "spark dwell",
-    "load ceiling",
-    "torque request ceiling",
-    "modeled torque limit",
-    "load to torque limit",
-    "load target offset",
-    "load limiting factor",
-    "boost limit multiplier",
-    "torque reduction factor",
-    "egt ceiling",
-    "clutch",
-    "hpfp delivery rate",
-    "pvdmx",
-    "vanos in",
-    "vanos ex",
-    "mhd+ custom",
-    "antilag",
 ]
 
 BUCKET_RULES = [
@@ -203,91 +163,91 @@ BUILTIN_DESCRIPTION_OVERLAY = {
     "Fuel (Main)": {
         "short": "Primary AFR target table for the active map.",
         "long": "This is the base fueling target table you shape first for steady high-load fueling. On N55 variants with mirrored banks, keep paired bank tables aligned unless you intentionally need bank-specific behavior.",
-        "bucket": "Quick Start",
+        "bucket": "Fueling / Ethanol",
         "aliases": ["Fuel (Bank 1)", "Fuel (Bank 2)"],
         "priority_note": "Core startup fueling table",
     },
     "Fuel (Spool)": {
         "short": "AFR target table used during spool mode below the spool-mode RPM gate.",
         "long": "This table gives you a separate fueling target during the low-RPM spool phase. It is one of the first places to review when transient spool behavior and turbo response are the focus.",
-        "bucket": "Quick Start",
+        "bucket": "Fueling / Ethanol",
     },
     "Lambda Target Min": {
         "short": "Global richest lambda floor that the DME will not command beyond.",
         "long": "If your richer fuel targets go below this floor, the DME will clamp them here. This is a core guardrail table for ethanol and high-load enrichment work.",
-        "bucket": "Quick Start",
+        "bucket": "Fueling / Ethanol",
     },
     "Lambda Limit Rich": {
         "short": "Rich-side clamp that can override richer fuel targets.",
         "long": "This limiter can win over your main fuel tables if it is set leaner than the commanded target. It is especially important to review when setting ethanol or spool enrichment targets.",
-        "bucket": "Quick Start",
+        "bucket": "Fueling / Ethanol",
     },
     "Fuel Scalar": {
         "short": "Feedforward fueling multiplier used to correct base fueling error.",
         "long": "Use this to move the model closer so trims stay under control before you start relying on correction. It is one of the quickest tables to touch when injector or fuel hardware changes shift the base fueling model.",
-        "bucket": "Quick Start",
+        "bucket": "Fueling / Ethanol",
     },
     "Timing (Main)": {
         "short": "Primary warm ignition timing map for normal high-load operation.",
         "long": "This is the main spark table you usually tune first for power and knock resistance once the engine is warm. Small changes here can have a large impact on torque, MBT approach, and safety margin.",
-        "bucket": "Quick Start",
+        "bucket": "Ignition",
     },
     "Timing (Spool)": {
         "short": "Ignition timing path used during spool mode.",
         "long": "This table shapes timing during the spool-up phase below the spool-mode gate. It is useful when tuning turbo response, transient feel, and knock behavior during early boost build.",
-        "bucket": "Quick Start",
+        "bucket": "Ignition",
     },
     "Load Ceiling": {
         "short": "Primary maximum load limiter that caps requested/allowed load.",
         "long": "This is one of the first load and torque limiters to review when you raise boost or airflow capability. If it stays too low, the rest of the tune can be ready but the ECU still will not allow the requested load.",
-        "bucket": "Quick Start",
+        "bucket": "Torque / Load / Limits",
         "aliases": ["Load ceiling (main)"],
     },
     "Torque Request Ceiling": {
         "short": "Hard torque request cap by RPM or operating mode.",
         "long": "This limiter can cap torque demand before the rest of the torque model has a chance to work. On higher-output setups it often needs to be brought in line with the rest of the torque strategy.",
-        "bucket": "Quick Start",
+        "bucket": "Torque / Load / Limits",
         "aliases": ["Torque request ceiling (Auto)"],
     },
     "Load To Torque Limit": {
         "short": "Conversion limit table that defines how load is translated into modeled torque.",
         "long": "This table helps keep the torque model coherent as you extend the operating range. It is important to preserve sensible low-end behavior while expanding the upper load range for bigger turbo setups.",
-        "bucket": "Quick Start",
+        "bucket": "Torque / Load / Limits",
         "aliases": ["Load to Torque limit 1", "Load to Torque limit 2"],
     },
     "Load Limit Factor": {
         "short": "VE or pressure-to-load factor that strongly affects model accuracy.",
         "long": "This is one of the most important model-shaping tables on a hardware-changed setup because it influences how pressure and airflow become calculated load. It is worth keeping near the top of any quick-start list for larger turbo work.",
-        "bucket": "Quick Start",
+        "bucket": "Torque / Load / Limits",
         "aliases": ["Load limiting factor", "Boost Limit multiplier", "Schluckgerade"],
     },
     "WGDC Base": {
         "short": "Primary base wastegate duty table for boost control.",
         "long": "This is one of the most frequently tuned boost tables because it sets the feedforward wastegate duty target that the rest of the control loop trims around. It is a core starting point for MHD+ custom boost setups.",
-        "bucket": "Quick Start",
+        "bucket": "Boost / WGDC",
         "aliases": ["WGDC Base (Custom)", "WGDC Base (Custom) (Antilag)"],
     },
     "WGDC P-Factor": {
         "short": "Proportional correction table in the custom WGDC control strategy.",
         "long": "This table shapes how aggressively boost error becomes a WGDC correction. It works with the base table and D-factor to set the feel and stability of the closed-loop boost response.",
-        "bucket": "Quick Start",
+        "bucket": "Boost / WGDC",
         "aliases": ["WGDC P-Factor (Custom)", "WGDC P-Factor (Custom) (Antilag)"],
     },
     "WGDC D-Factor": {
         "short": "Derivative-style damping table for the custom WGDC control strategy.",
         "long": "This table helps calm fast boost error changes and can improve overshoot control. It belongs alongside WGDC Base and WGDC P-Factor when setting up a new custom boost calibration.",
-        "bucket": "Quick Start",
+        "bucket": "Boost / WGDC",
         "aliases": ["WGDC D-Factor (Custom)", "WGDC D-Factor (Custom) (Antilag)"],
     },
     "HPFP Delivery Rate": {
         "short": "High-pressure fuel pump delivery model used by the ECU fuel system calculations.",
         "long": "This is especially important on upgraded pump hardware because it affects how the ECU predicts available high-pressure fuel flow. It is a strong candidate for a quick-start review on fuel-system-changed cars.",
-        "bucket": "Quick Start",
+        "bucket": "Rail / HPFP / Fuel System",
     },
     "PVDMX": {
         "short": "Key model table to review when extending the setup beyond stock airflow assumptions.",
-        "long": "You called this table out specifically for the build, so it is pinned into Quick Start. It should stay easy to find while the exact calibration strategy around it gets refined.",
-        "bucket": "Quick Start",
+        "long": "You called this table out specifically for the build, so it should stay easy to find while the exact calibration strategy around it gets refined.",
+        "bucket": "Other",
     },
 }
 
@@ -479,6 +439,8 @@ def build_table_metadata(table_def: dict, categories_map: dict[int, str]) -> dic
         "low_priority_reason": low_priority_reason,
         "primary_category_path": primary_category_path or ["Uncategorised"],
         "family_title": variants["family_title"],
+        "family_key": family_normalized,
+        "preference_key": normalized,
         "map_variant": variants["map_variant"],
         "effective_map_variant": variants["effective_map_variant"],
         "map_inferred": variants["map_inferred"],
@@ -561,8 +523,6 @@ def _detect_low_priority(table_def: dict, haystack: str) -> str | None:
 
 
 def _classify_bucket(normalized: str, haystack: str) -> str:
-    if any(keyword in normalized or keyword in haystack for keyword in QUICK_START_RULES):
-        return "Quick Start"
     for bucket, keywords in BUCKET_RULES:
         if any(keyword in normalized or keyword in haystack for keyword in keywords):
             return bucket
@@ -579,8 +539,6 @@ def _score_table(*, normalized: str, haystack: str, workflow_bucket: str, change
     for phrase, bonus in SEED_PRIORITY_RULES:
         if phrase in normalized:
             score += bonus
-    if workflow_bucket == "Quick Start":
-        score += 2500
     for bucket, keywords in BUCKET_RULES:
         if bucket != workflow_bucket:
             continue

@@ -1,7 +1,7 @@
 # Progress
 
 ## Current Objective
-- Refine the map-first workspace so it reflects real tuning workflow, especially around map-specific table assignment and quick-start discovery.
+- Refactor the tuning app into a persistent workspace with shared favorites/folders, inline table editing, and a separate compare flow.
 
 ## Active Branch / Workspace
 - Real repo branch: `codex/editor-mvp`
@@ -24,17 +24,25 @@
 - Fixed CLI session replay/export so session files containing `axis_x_set` and `axis_y_set` edits round-trip cleanly through `tuner_cli.py`.
 - Fixed the same-session parallel CLI race by adding session-file locking and atomic session saves.
 - Redesigned the loaded-results experience into a compact map-first tuning workspace with a left rail, map tabs, category tabs, and a right inspector.
+- Replaced the old upload/results split with a persistent shell that stays visible before and after file load, including in-place `Parse / Reload` file controls.
+- Removed second-BIN upload from the main tuning page and added a dedicated `/compare` route plus `/api/compare` for read-only BIN-vs-BIN analysis.
+- Added shared preferences storage backed by `viewer_preferences.json`, with stable `preference_key` / `family_key` metadata in parse payloads.
+- Replaced hardcoded quick-start surfacing with persistent favorites/folder scaffolding in the workspace shell.
+- Moved normal value editing into the open table card, added double-click inline cell editing, and narrowed the inspector toward metadata plus breakpoint editing.
+- Reworked breakpoint editing toward a one-axis-at-a-time vertical list and fixed the main layout scroll/overflow traps that were clipping the inspector on larger tables.
 
 ## In Progress
-- WIP: Add tuning-knowledge-driven `Quick Start` surfacing and improve legacy Map 1 table inference so unlabeled tables like `Fuel (Bank 1)` are no longer treated as global.
+- WIP: Polish favorites/folder management so family-level starring, folder ordering, and richer assignment controls feel complete in the new shell.
+- WIP: Deepen compare-mode presentation with richer XDF overlap context for raw ranges and more detailed changed-cell summaries.
 
 ## Next Up
-- Sanity-check the new `Quick Start` bucket and overview pills against the user's real XDF/BIN.
-- Expand the built-in knowledge overlay or merge in a curated `table_descriptions.json` generated from the user's tuning notes.
-- Tune more family alias rules if additional legacy Map 1 tables are still being treated as global.
+- Add family-level starring and easier folder assignment directly from family rows.
+- Improve compare mode with nearest XDF definitions for unmapped raw ranges and a denser changed-table summary.
+- Do a live browser pass on the persistent shell to tighten any remaining UI regressions around inline editing and inspector scrolling.
 
 ## Blockers / Questions
-- Some map-family naming is inconsistent across XDFs, so additional alias rules may be needed as more real-world tables are reviewed.
+- Family-level favorites and AI-driven folder assignment are not finished yet, so the current preferences flow is strongest at the table level.
+- Compare mode currently surfaces mapped tables and raw byte ranges, but it does not yet annotate raw ranges with nearest XDF definitions.
 
 ## Validation Log
 - 2026-03-17: `python -m py_compile app.py bin_reader.py editor_core.py table_ranker.py tuner_cli.py xdf_parser.py` passed in the workspace copy.
@@ -52,3 +60,8 @@
 - 2026-04-08: Same-session parallel CLI mutation test preserved both edits after adding a session lock and atomic save path, confirming the last-writer-wins race was fixed.
 - 2026-04-08: `tuner_cli.py axis` preview/apply verified end-to-end for `WGDC Base` X-axis edits, with the resulting session diff showing a persisted `axis_x_set` operation.
 - 2026-04-08: Real Flask smoke checks passed for the redesigned workspace: `GET /` rendered the new shell, `node --check static/app.js` passed, and `/api/parse` returned tables plus a live session for `000021571DAA01.xdf` + `Stock_TestCLI.bin`.
+- 2026-04-09: `node --check static/app.js` passed after the persistent-shell, favorites, and inline-editor refactor.
+- 2026-04-09: `python -m py_compile app.py preferences_store.py table_ranker.py editor_core.py` passed after adding preferences APIs and compare route support.
+- 2026-04-09: Flask test-client smoke checks returned `200` for both `/` and `/compare` with the new templates.
+- 2026-04-09: Real parse smoke test against `000021571DAA01.xdf` + `Stock_TestCLI.bin` returned `200`, created a live session, and included `preferences`, `preference_key`, and `family_key` in the payload.
+- 2026-04-09: Real compare smoke test against `000021571DAA01.xdf`, `Stock_TestCLI.bin`, and `Stock_TestCLIManual.bin` returned `200` with mapped changed tables plus raw diff ranges.

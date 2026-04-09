@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TunerPro XDF Viewer</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260408a" />
+  <link rel="stylesheet" href="/static/style.css?v=20260409b" />
 </head>
 <body>
 <header>
@@ -19,85 +19,20 @@
   </div>
 </header>
 
-<div class="upload-panel" id="upload-panel">
-  <div class="upload-grid">
-    <div class="drop-zone" id="drop-xdf" data-target="xdf">
-      <div class="drop-icon">
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="12" y1="18" x2="12" y2="12"/>
-          <line x1="9" y1="15" x2="15" y2="15"/>
-        </svg>
-      </div>
-      <div class="drop-label">Drop <strong>.xdf</strong> here</div>
-      <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-xdf" accept=".xdf,.xml" hidden /></label></div>
-      <div class="drop-status" id="status-xdf">No file selected</div>
-    </div>
-
-    <div class="drop-zone" id="drop-bin" data-target="bin">
-      <div class="drop-icon">
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="2" y="3" width="20" height="14" rx="2"/>
-          <line x1="8" y1="21" x2="16" y2="21"/>
-          <line x1="12" y1="17" x2="12" y2="21"/>
-        </svg>
-      </div>
-      <div class="drop-label">Drop <strong>.bin</strong> here</div>
-      <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-bin" accept=".bin,.hex,*" hidden /></label></div>
-      <div class="drop-status" id="status-bin">No file selected</div>
-    </div>
-
-    <div class="drop-zone drop-zone--optional" id="drop-bin2" data-target="bin2">
-      <div class="drop-icon">
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="2" y="3" width="20" height="14" rx="2"/>
-          <line x1="8" y1="21" x2="16" y2="21"/>
-          <line x1="12" y1="17" x2="12" y2="21"/>
-          <circle cx="18" cy="5" r="5" fill="#f59e0b" stroke="none"/>
-          <line x1="18" y1="3" x2="18" y2="7" stroke="#1a1a2e" stroke-width="1.5"/>
-          <line x1="16" y1="5" x2="20" y2="5" stroke="#1a1a2e" stroke-width="1.5"/>
-        </svg>
-      </div>
-      <div class="drop-label"><strong>Second .bin</strong> <span class="optional-badge">optional diff</span></div>
-      <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-bin2" accept=".bin,.hex,*" hidden /></label></div>
-      <div class="drop-status" id="status-bin2">No file selected</div>
-    </div>
-  </div>
-
-  <div class="upload-actions">
-    <button class="btn btn-primary" id="btn-parse" disabled>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="5 12 12 5 19 12"/>
-        <line x1="12" y1="5" x2="12" y2="19"/>
-      </svg>
-      Parse Files
-    </button>
-    <button class="btn btn-ghost" id="btn-debug" disabled title="Inspect raw XDF parse: addresses, dims, strides, math">Debug XDF</button>
-    <button class="btn btn-ghost" id="btn-clear" style="display:none">Clear</button>
-  </div>
-
-  <div class="progress-bar" id="progress-bar" style="display:none">
-    <div class="progress-fill" id="progress-fill"></div>
-  </div>
-  <div class="upload-error" id="upload-error" style="display:none"></div>
-</div>
-
-<div class="results-area" id="results-area" style="display:none">
+<div class="results-area" id="results-area">
   <div class="workspace-topbar">
     <div class="workspace-topbar__meta">
-      <div class="workspace-kicker">Loaded Workspace</div>
+      <div class="workspace-kicker">Persistent Workspace</div>
       <div class="workspace-title-wrap">
         <div class="workspace-title">Map-first tuning cockpit</div>
-        <div class="workspace-subtitle">Compact browsing, editing, and AI-assisted review in one compartmentalized workspace.</div>
+        <div class="workspace-subtitle">Keep the shell in place while you load, reload, compare, and edit bins.</div>
       </div>
     </div>
 
     <div class="workspace-topbar__controls">
-      <span class="count-badge" id="count-badge">0 / 0 shown</span>
       <div class="editor-toolbar" id="editor-toolbar">
         <div class="editor-toolbar__status">
-          <span class="editor-badge" id="draft-badge">Draft Clean</span>
+          <span class="editor-badge" id="draft-badge">Draft Unloaded</span>
           <span class="editor-meta" id="draft-meta">0 pending edits · 0 dirty tables</span>
         </div>
         <div class="editor-toolbar__actions">
@@ -108,15 +43,40 @@
       </div>
       <div class="workspace-actions">
         <button class="btn btn-ghost btn-sm" id="btn-ai-context" title="Show AI context prompt">AI Context</button>
+        <a class="btn btn-ghost btn-sm" href="/compare">Compare BINs</a>
         <button class="btn btn-ghost btn-sm" id="btn-collapse-all">Collapse All</button>
         <button class="btn btn-primary btn-sm" id="btn-export-bin-top" disabled>Export BIN</button>
-        <button class="btn btn-ghost btn-sm" id="btn-new-files">New Files</button>
+        <button class="btn btn-ghost btn-sm" id="btn-new-files">Replace Files</button>
       </div>
     </div>
   </div>
 
   <div class="workspace-shell">
     <aside class="workspace-sidebar">
+      <section class="workspace-panel workspace-panel--files">
+        <div class="workspace-panel__label">Files</div>
+        <div class="file-panel">
+          <div class="drop-zone drop-zone--compact" id="drop-xdf" data-target="xdf">
+            <div class="drop-label">Load <strong>.xdf</strong></div>
+            <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-xdf" accept=".xdf,.xml" hidden /></label></div>
+            <div class="drop-status" id="status-xdf">No XDF selected</div>
+          </div>
+          <div class="drop-zone drop-zone--compact" id="drop-bin" data-target="bin">
+            <div class="drop-label">Load <strong>.bin</strong></div>
+            <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-bin" accept=".bin,.hex,*" hidden /></label></div>
+            <div class="drop-status" id="status-bin">No BIN selected</div>
+          </div>
+          <div class="file-actions">
+            <button class="btn btn-primary btn-sm" id="btn-parse" disabled>Parse / Reload</button>
+            <button class="btn btn-ghost btn-sm" id="btn-debug" disabled title="Inspect raw XDF parse: addresses, dims, strides, math">Debug XDF</button>
+          </div>
+          <div class="progress-bar" id="progress-bar" style="display:none">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <div class="upload-error" id="upload-error" style="display:none"></div>
+        </div>
+      </section>
+
       <section class="workspace-panel">
         <div class="workspace-panel__label">Browse</div>
         <div class="search-wrap search-wrap--sidebar">
@@ -135,11 +95,21 @@
           </select>
         </div>
         <button class="btn btn-ghost btn-sm btn-block" id="btn-hide-autogen" title="Toggle autogen axis tables">Autogen Hidden</button>
+        <div class="count-badge count-badge--sidebar" id="count-badge">0 / 0 shown</div>
       </section>
 
       <section class="workspace-panel" id="map-panel">
         <div class="workspace-panel__label">Maps</div>
         <div class="map-tabs" id="map-tabs"></div>
+      </section>
+
+      <section class="workspace-panel" id="favorites-panel">
+        <div class="workspace-panel__label">Favorites</div>
+        <div class="favorites-actions">
+          <button class="btn btn-ghost btn-sm btn-block" id="btn-toggle-favorite" disabled>Star Selected</button>
+          <button class="btn btn-ghost btn-sm btn-block" id="btn-create-folder">New Folder</button>
+        </div>
+        <div class="folder-list" id="folder-list"></div>
       </section>
 
       <section class="workspace-panel" id="category-panel">
@@ -151,6 +121,10 @@
     <main class="workspace-main">
       <section class="workspace-overview" id="workspace-overview"></section>
       <section class="category-tabs" id="category-tabs"></section>
+      <div class="workspace-empty" id="workspace-empty">
+        <div class="workspace-empty__title">Load an XDF and BIN to start tuning</div>
+        <div class="workspace-empty__copy">The workspace stays put while you replace files in place. Use the Files panel on the left, then hit Parse / Reload.</div>
+      </div>
       <div class="table-list" id="table-list"></div>
     </main>
 
@@ -159,7 +133,7 @@
         <div class="workspace-panel__label">Inspector</div>
         <div class="inspector-empty" id="inspector-empty">
           <div class="inspector-empty__title">Select a table</div>
-          <div class="inspector-empty__copy">Pick a table row to review descriptions, adjust metadata, preview edits, or work on axis breakpoints.</div>
+          <div class="inspector-empty__copy">Review descriptions, edit metadata, manage favorites, and adjust breakpoint axes here.</div>
         </div>
         <div class="inspector-panel" id="inspector-panel" style="display:none">
           <div class="inspector-panel__header" id="inspector-header"></div>
@@ -167,6 +141,28 @@
         </div>
       </div>
     </aside>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="folder-modal" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <span>Folder</span>
+      <button class="modal-close" id="folder-close">x</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Create or rename a shared favorites folder for this tuning workspace.</p>
+      <div class="metadata-form">
+        <label class="metadata-form__field">
+          <span>Folder Name</span>
+          <input type="text" id="folder-name" />
+        </label>
+      </div>
+      <div class="metadata-form__actions">
+        <button class="btn btn-ghost btn-sm" id="folder-delete" style="display:none">Delete Folder</button>
+        <button class="btn btn-primary btn-sm" id="folder-save">Save Folder</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -230,7 +226,6 @@
 
 <div class="toast" id="copy-toast">Copied to clipboard!</div>
 
-<script src="/static/app.js?v=20260408a"></script>
+<script src="/static/app.js?v=20260409b"></script>
 </body>
 </html>
-

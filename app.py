@@ -6,7 +6,8 @@ import traceback
 from flask import Flask, jsonify, render_template, request, send_file
 
 from bin_reader import extract_table
-from editor_core import SessionRegistry
+from editor_core import EditSession, SessionRegistry
+from preferences_store import load_preferences, save_preferences
 from table_ranker import build_table_metadata
 from xdf_parser import parse_xdf
 
@@ -20,12 +21,18 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/compare')
+def compare():
+    return render_template('compare.html')
+
+
 def serialize_session(session):
     return {
         'tables': session.list_tables(),
         'count': len(session.bindings),
         'categories': {str(k): v for k, v in session.categories_map.items()},
         'session': session.get_summary(),
+        'preferences': load_preferences(),
     }
 
 
@@ -41,7 +48,6 @@ def api_parse():
     try:
         xdf_file = request.files.get('xdf')
         bin_file = request.files.get('bin')
-        bin2_file = request.files.get('bin2')
 
         if not xdf_file:
             return jsonify({'error': 'XDF file is required'}), 400
@@ -50,15 +56,12 @@ def api_parse():
 
         xdf_bytes = xdf_file.read()
         bin_data = bin_file.read()
-        bin2_data = bin2_file.read() if bin2_file else None
 
         session = SESSIONS.create(
             xdf_bytes=xdf_bytes,
             bin_bytes=bin_data,
             xdf_name=xdf_file.filename or 'input.xdf',
             bin_name=bin_file.filename or 'input.bin',
-            bin2_bytes=bin2_data,
-            bin2_name=bin2_file.filename if bin2_file else None,
         )
         return jsonify(serialize_session(session))
 
@@ -137,6 +140,66 @@ def api_debug():
 
         return jsonify({'count': len(out), 'tables': out})
 
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 500
+
+
+@app.route('/api/preferences', methods=['GET'])
+def api_preferences_get():
+    return jsonify(load_preferences())
+
+
+@app.route('/api/preferences', methods=['POST'])
+def api_preferences_post():
+    try:
+        payload = request.get_json(silent=True) or {}
+        prefs = save_preferences(payload)
+        return jsonify(prefs)
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/compare', methods=['POST'])
+def api_compare():
+    try:
+        xdf_file = request.files.get('xdf')
+        base_file = request.files.get('bin')
+        compare_file = request.files.get('compare_bin')
+
+        if not xdf_file:
+            return jsonify({'error': 'XDF file is required'}), 400
+        if not base_file:
+            return jsonify({'error': 'Base BIN file is required'}), 400
+        if not compare_file:
+            return jsonify({'error': 'Compare BIN file is required'}), 400
+
+        xdf_bytes = xdf_file.read()
+        base_bytes = base_file.read()
+        compare_bytes = compare_file.read()
+
+        session = EditSession(
+            xdf_bytes=xdf_bytes,
+            bin_bytes=base_bytes,
+            xdf_name=xdf_file.filename or 'input.xdf',
+            bin_name=base_file.filename or 'base.bin',
+            bin2_bytes=compare_bytes,
+            bin2_name=compare_file.filename or 'compare.bin',
+        )
+        tables = session.list_tables()
+        changed_tables = [table for table in tables if table.get('has_diff') and _table_has_meaningful_diff(table)]
+
+        return jsonify({
+            'summary': {
+                'xdf_name': session.source_xdf_name,
+                'base_bin_name': session.source_bin_name,
+                'compare_bin_name': session.reference_bin_name,
+                'changed_table_count': len(changed_tables),
+                'raw_change_range_count': len(_build_raw_diff_ranges(base_bytes, compare_bytes)),
+            },
+            'tables': changed_tables,
+            'raw_ranges': _build_raw_diff_ranges(base_bytes, compare_bytes),
+            'preferences': load_preferences(),
+        })
     except Exception as exc:
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 500
 
@@ -265,6 +328,61 @@ def api_session_export(session_id):
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+def _table_has_meaningful_diff(table: dict) -> bool:
+    grid = table.get('grid') or []
+    grid2 = table.get('grid2') or []
+    for row_index, row in enumerate(grid):
+        other_row = grid2[row_index] if row_index < len(grid2) else []
+        for col_index, value in enumerate(row):
+            if col_index >= len(other_row):
+                return True
+            if value != other_row[col_index]:
+                return True
+    return False
+
+
+def _build_raw_diff_ranges(base_bytes: bytes, compare_bytes: bytes) -> list[dict]:
+    ranges = []
+    max_len = min(len(base_bytes), len(compare_bytes))
+    start = None
+    for index in range(max_len):
+        if base_bytes[index] != compare_bytes[index]:
+            if start is None:
+                start = index
+            continue
+        if start is not None:
+            ranges.append(_make_raw_range(base_bytes, compare_bytes, start, index))
+            start = None
+    if start is not None:
+        ranges.append(_make_raw_range(base_bytes, compare_bytes, start, max_len))
+    if len(base_bytes) != len(compare_bytes):
+        start = max_len
+        end = max(len(base_bytes), len(compare_bytes))
+        ranges.append({
+            'start': start,
+            'end': end,
+            'length': end - start,
+            'before_hex': base_bytes[start:end].hex(),
+            'after_hex': compare_bytes[start:end].hex(),
+            'context_before_hex': base_bytes[max(0, start - 8):start].hex(),
+            'context_after_hex': compare_bytes[start:end + 8].hex(),
+            'unmapped': True,
+        })
+    return ranges[:400]
+
+
+def _make_raw_range(base_bytes: bytes, compare_bytes: bytes, start: int, end: int) -> dict:
+    return {
+        'start': start,
+        'end': end,
+        'length': end - start,
+        'before_hex': base_bytes[start:end].hex(),
+        'after_hex': compare_bytes[start:end].hex(),
+        'context_before_hex': base_bytes[max(0, start - 8):start].hex(),
+        'context_after_hex': compare_bytes[end:min(len(compare_bytes), end + 8)].hex(),
+    }
 
 
 if __name__ == '__main__':

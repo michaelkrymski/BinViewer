@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BIN Compare</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260409b" />
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="logo">BIN Compare</div>
+    <div class="header-meta"><a href="/" style="color:inherit">Back to Workspace</a></div>
+  </div>
+</header>
+
+<div class="results-area">
+  <div class="workspace-topbar">
+    <div class="workspace-topbar__meta">
+      <div class="workspace-kicker">Read-only Compare</div>
+      <div class="workspace-title-wrap">
+        <div class="workspace-title">Compare two BINs against one XDF</div>
+        <div class="workspace-subtitle">Review mapped table changes and raw byte ranges without entering the edit workflow.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="workspace-shell" style="grid-template-columns:320px minmax(0,1fr);">
+    <aside class="workspace-sidebar" style="position:static;max-height:none;">
+      <section class="workspace-panel">
+        <div class="workspace-panel__label">Files</div>
+        <div class="file-panel">
+          <div class="drop-zone drop-zone--compact">
+            <div class="drop-label">XDF</div>
+            <input id="compare-xdf" type="file" accept=".xdf,.xml" />
+          </div>
+          <div class="drop-zone drop-zone--compact">
+            <div class="drop-label">Base BIN</div>
+            <input id="compare-bin-a" type="file" accept=".bin,.hex,*" />
+          </div>
+          <div class="drop-zone drop-zone--compact">
+            <div class="drop-label">Compare BIN</div>
+            <input id="compare-bin-b" type="file" accept=".bin,.hex,*" />
+          </div>
+          <button class="btn btn-primary btn-sm" id="compare-run">Run Compare</button>
+        </div>
+      </section>
+    </aside>
+
+    <main class="workspace-main">
+      <section class="workspace-overview" id="compare-summary"></section>
+      <section class="workspace-panel">
+        <div class="workspace-panel__label">Mapped Table Changes</div>
+        <div id="compare-tables" class="table-list">
+          <div class="workspace-empty">
+            <div class="workspace-empty__title">No compare loaded yet</div>
+            <div class="workspace-empty__copy">Load one XDF, one base BIN, and one compare BIN to surface changed definitions and unmapped raw ranges.</div>
+          </div>
+        </div>
+      </section>
+      <section class="workspace-panel" style="margin-top:0.85rem;">
+        <div class="workspace-panel__label">Raw Binary Ranges</div>
+        <div id="compare-raw" class="table-list"></div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+  const byId = id => document.getElementById(id);
+  byId('compare-run').addEventListener('click', async () => {
+    const xdf = byId('compare-xdf').files[0];
+    const binA = byId('compare-bin-a').files[0];
+    const binB = byId('compare-bin-b').files[0];
+    if (!xdf || !binA || !binB) return;
+    const form = new FormData();
+    form.append('xdf', xdf);
+    form.append('bin', binA);
+    form.append('compare_bin', binB);
+    const response = await fetch('/api/compare', { method: 'POST', body: form });
+    const data = await response.json();
+    if (!response.ok) {
+      byId('compare-tables').innerHTML = '<div class="workspace-empty"><div class="workspace-empty__title">Compare failed</div><div class="workspace-empty__copy">' + (data.error || 'Unknown error') + '</div></div>';
+      return;
+    }
+    byId('compare-summary').innerHTML = `
+      <div class="overview-card"><div class="overview-card__eyebrow">Summary</div><div class="overview-card__title">${data.summary.changed_table_count} changed tables</div></div>
+      <div class="overview-card"><div class="overview-card__eyebrow">Raw Diff</div><div class="overview-card__title">${data.summary.raw_change_range_count} raw change ranges</div></div>`;
+    byId('compare-tables').innerHTML = (data.tables || []).map(table => `
+      <div class="table-card open">
+        <div class="card-header"><div class="card-title">${table.title}</div><div class="card-meta">${table.workflow_bucket || 'Other'}</div></div>
+        <div class="card-body"><div class="desc-short">${table.rows}x${table.cols} · ${table.units || 'no units'}</div></div>
+      </div>`).join('') || '<div class="desc-short">No mapped XDF definitions changed.</div>';
+    byId('compare-raw').innerHTML = (data.raw_ranges || []).map(range => `
+      <div class="table-card open">
+        <div class="card-header"><div class="card-title">0x${Number(range.start).toString(16)} - 0x${Number(range.end).toString(16)}</div><div class="card-meta">${range.length} bytes</div></div>
+        <div class="card-body"><div class="desc-short">Before: ${range.before_hex}</div><div class="desc-short">After: ${range.after_hex}</div></div>
+      </div>`).join('') || '<div class="desc-short">No raw differences detected.</div>';
+  });
+</script>
+</body>
+</html>
