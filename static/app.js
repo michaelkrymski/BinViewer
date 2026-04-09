@@ -79,6 +79,7 @@ const btnClear = $('btn-clear');
 const btnDebug = $('btn-debug');
 const btnHideAutogen = $('btn-hide-autogen');
 const btnCollapseAll = $('btn-collapse-all');
+const btnExportBinTop = $('btn-export-bin-top');
 const btnNewFiles = $('btn-new-files');
 const btnAiContext = $('btn-ai-context');
 const btnCopyAiContext = $('btn-copy-ai-context');
@@ -194,6 +195,7 @@ function wireToolbar() {
   });
 
   btnCopyAiContext.addEventListener('click', () => copyText(AI_CONTEXT_PROMPT));
+  btnExportBinTop.addEventListener('click', exportDraft);
 
   btnUndoDraft.addEventListener('click', undoDraft);
   btnResetDraft.addEventListener('click', resetDraft);
@@ -742,6 +744,7 @@ function updateDraftToolbar() {
     btnUndoDraft.disabled = true;
     btnResetDraft.disabled = true;
     btnExportDraft.disabled = true;
+    btnExportBinTop.disabled = true;
     return;
   }
 
@@ -751,6 +754,7 @@ function updateDraftToolbar() {
   btnUndoDraft.disabled = pending === 0;
   btnResetDraft.disabled = pending === 0;
   btnExportDraft.disabled = !exportReady;
+  btnExportBinTop.disabled = !exportReady;
 }
 
 function snapshotOpenState() {
