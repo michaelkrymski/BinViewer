@@ -428,6 +428,75 @@ class EditSession:
             'pending_edits': deepcopy(self.pending_edits),
         }
 
+    def transfer_reference_table(self, table_id: str, *, include_axes: bool = False) -> dict:
+        """Copy the reference BIN's values for one table into the working draft."""
+        if self.reference_bin is None:
+            raise ValueError('No compare/reference BIN is loaded for this session.')
+
+        binding = self._require_binding(table_id)
+        current_entry = self._current_tables[table_id]
+        if current_entry.get('error'):
+            raise ValueError(f"Table {table_id} cannot be transferred: {current_entry['error']}")
+        if not current_entry.get('editable'):
+            raise ValueError(f'Table {table_id} is not editable and cannot be transferred.')
+
+        reference_data = extract_table(self.reference_bin, binding.table_def)
+        value_changes = summarize_changes(current_entry['grid'], reference_data['grid'])
+        x_changes = summarize_axis_changes(current_entry.get('x_labels') or [], reference_data.get('x_labels'))
+        y_changes = summarize_axis_changes(current_entry.get('y_labels') or [], reference_data.get('y_labels'))
+
+        self._history.append({
+            'working_bin': bytes(self.working_bin),
+            'pending_edits': deepcopy(self.pending_edits),
+            'dirty_table_ids': set(self.dirty_table_ids),
+        })
+
+        write_grid_to_bin(self.working_bin, binding.table_def, reference_data['grid'])
+
+        if include_axes and current_entry.get('x_axis_editable') and x_changes:
+            write_axis_values_to_bin(
+                self.working_bin,
+                binding.table_def,
+                'x',
+                reference_data['x_labels'],
+                changed_indices=[change['index'] for change in x_changes],
+            )
+        if include_axes and current_entry.get('y_axis_editable') and y_changes:
+            write_axis_values_to_bin(
+                self.working_bin,
+                binding.table_def,
+                'y',
+                reference_data['y_labels'],
+                changed_indices=[change['index'] for change in y_changes],
+            )
+
+        self._refresh_table(table_id)
+        refreshed_table = self._current_tables[table_id]
+        self.pending_edits.append({
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'table_id': table_id,
+            'table_title': refreshed_table['title'],
+            'operation': 'transfer_reference',
+            'selection': {'rows': refreshed_table['rows'], 'cols': refreshed_table['cols']},
+            'parameters': {
+                'include_axes': include_axes,
+                'reference_bin_name': self.reference_bin_name,
+                'x_axis_changed': len(x_changes) if include_axes else 0,
+                'y_axis_changed': len(y_changes) if include_axes else 0,
+            },
+            'summary': build_preview_summary(value_changes),
+        })
+        return {
+            'table': deepcopy(refreshed_table),
+            'session': self.get_summary(),
+            'pending_edits': deepcopy(self.pending_edits),
+            'summary': {
+                'changed_cell_count': len(value_changes),
+                'x_axis_changed_count': len(x_changes) if include_axes else 0,
+                'y_axis_changed_count': len(y_changes) if include_axes else 0,
+            },
+        }
+
     def undo_last(self) -> dict:
         """Undo the latest applied edit."""
         if not self._history:
@@ -564,6 +633,8 @@ class EditSession:
                 'cols': data['cols'],
                 'has_diff': reference_data is not None,
                 'grid2': reference_data['grid'] if reference_data else None,
+                'x_labels2': reference_data['x_labels'] if reference_data else None,
+                'y_labels2': reference_data['y_labels'] if reference_data else None,
                 'error': None,
                 'category_indices': table_def.get('category_indices', []),
                 'is_autogen': table_def.get('is_autogen', False),
@@ -595,6 +666,8 @@ class EditSession:
                 'cols': 0,
                 'has_diff': False,
                 'grid2': None,
+                'x_labels2': None,
+                'y_labels2': None,
                 'error': str(exc),
                 'category_indices': table_def.get('category_indices', []),
                 'is_autogen': table_def.get('is_autogen', False),

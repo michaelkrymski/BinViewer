@@ -181,7 +181,7 @@ def api_compare():
         base_bytes = base_file.read()
         compare_bytes = compare_file.read()
 
-        session = EditSession(
+        session = SESSIONS.create(
             xdf_bytes=xdf_bytes,
             bin_bytes=base_bytes,
             xdf_name=xdf_file.filename or 'input.xdf',
@@ -200,6 +200,7 @@ def api_compare():
                 'changed_table_count': len(changed_tables),
                 'raw_change_range_count': len(_build_raw_diff_ranges(base_bytes, compare_bytes)),
             },
+            'session': session.get_summary(),
             'tables': changed_tables,
             'raw_ranges': _build_raw_diff_ranges(base_bytes, compare_bytes),
             'preferences': load_preferences(),
@@ -307,6 +308,22 @@ def api_session_import_apply(session_id):
             payload.get('table_id', ''),
             payload.get('import_text', ''),
             mode=payload.get('mode', 'values_only'),
+        )
+        return jsonify(result)
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/session/<session_id>/transfer-reference', methods=['POST'])
+def api_session_transfer_reference(session_id):
+    try:
+        session = SESSIONS.get(session_id)
+        payload = request.get_json(silent=True) or {}
+        result = session.transfer_reference_table(
+            payload.get('table_id', ''),
+            include_axes=bool(payload.get('include_axes', False)),
         )
         return jsonify(result)
     except KeyError as exc:
