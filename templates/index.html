@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TunerPro XDF Viewer</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260409b" />
+  <link rel="stylesheet" href="/static/style.css?v=20260409c" />
 </head>
 <body>
 <header>
@@ -246,8 +246,43 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="import-modal" style="display:none">
+  <div class="modal modal--xl">
+    <div class="modal-header">
+      <span>Import AI Table</span>
+      <button class="modal-close" id="import-close">x</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Paste a full AI-generated table block, a labeled grid, or plain values. Preview compares the imported table against the current draft before anything is applied.</p>
+      <div class="import-toolbar">
+        <label class="metadata-form__field">
+          <span>Import Mode</span>
+          <select id="import-mode">
+            <option value="values_only">Values Only</option>
+            <option value="values_and_axes">Values + Axes</option>
+          </select>
+        </label>
+        <button class="btn btn-ghost btn-sm" id="import-clear">Clear</button>
+        <button class="btn btn-ghost btn-sm" id="import-preview-btn">Preview</button>
+        <button class="btn btn-primary btn-sm" id="import-apply-btn" disabled>Apply to Draft</button>
+      </div>
+      <textarea id="import-text" class="import-textarea" placeholder="[TABLE IMPORT]
+Title: Fuel (Main) (Map 2)
+Mode: values_only
+
+Values:
+14.7,14.7,14.7
+14.2,14.0,13.8
+"></textarea>
+      <div class="upload-error" id="import-error" style="display:none"></div>
+      <div class="import-summary" id="import-summary"></div>
+      <div class="import-compare" id="import-compare"></div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="copy-toast">Copied to clipboard!</div>
 
-<script src="/static/app.js?v=20260409b"></script>
+<script src="/static/app.js?v=20260409c"></script>
 </body>
 </html>

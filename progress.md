@@ -34,6 +34,8 @@
 - Added friendlier XDF format detection so binary/proprietary XDF files fail with a clear message instead of a raw XML parser traceback.
 - Added a first-class CLI `compare` command for mapped table diffs plus raw byte ranges, and made folders act as a real browse filter in the workspace.
 - Added AI-friendly CLI discovery commands and selectors: `describe`, `maps`, `families`, selector-based target resolution for `show`/`apply`/`axis`, and a chainable `batch` manifest runner.
+- Added a recorded parity/regression document at `E85V2_PARITY_REGRESSION.md` covering the canonical TunerPro vs web vs CLI exact-match case.
+- Added AI table import preview/apply support so pasted AI-generated tables can be compared side-by-side against the current draft before applying.
 
 ## In Progress
 - WIP: Polish web editing interactions for real-world tune entry, including persistent last-used operation, better single-cell editing, ctrl/shift selection behavior, stronger selection outlines, preview-in-grid rendering, and family-local map switching.
@@ -82,3 +84,4 @@
 - 2026-04-09: `tuner_cli.py --json describe`, `maps`, and `families` verified against a real session, returning command schemas, detected maps, and family/member listings suitable for agent discovery.
 - 2026-04-09: Selector-based table resolution verified by resolving `Fuel (Main)` + `Map 2` to the primary table instead of axis companions.
 - 2026-04-09: `tuner_cli.py batch` verified with a JSON manifest applying a selector-based edit step, then the session was reset cleanly afterward.
+- 2026-04-09: AI table import smoke tests passed through Flask test-client for both scalar and multi-cell tables using `/api/session/<id>/import-preview` and `/api/session/<id>/import-apply` against `000021571DAA01.xdf` + `Stock_TestCLI.bin`.

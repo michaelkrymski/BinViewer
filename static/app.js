@@ -62,6 +62,8 @@ const state = {
   openState: { cards: new Set(), groups: new Set(), families: new Set() },
   lastEditorPreset: loadEditorPrefs(),
   selectionAnchors: {},
+  importTableId: null,
+  importPreview: null,
 };
 
 const AI_CONTEXT_PROMPT = `You are an expert automotive ECU tuning assistant. I will share ECU calibration data copied from TunerPro XDF Viewer.
@@ -146,6 +148,15 @@ const btnQuickAddClose = $('folder-quick-add-close');
 const btnQuickAddCancel = $('folder-quick-add-cancel');
 const btnQuickAddClear = $('folder-quick-add-clear');
 const btnQuickAddSave = $('folder-quick-add-save');
+const importModal = $('import-modal');
+const importText = $('import-text');
+const importMode = $('import-mode');
+const importError = $('import-error');
+const importSummary = $('import-summary');
+const importCompare = $('import-compare');
+const btnImportClear = $('import-clear');
+const btnImportPreview = $('import-preview-btn');
+const btnImportApply = $('import-apply-btn');
 
 let debugTables = [];
 let dragSelection = null;
@@ -254,8 +265,12 @@ function wireModals() {
   $('ai-context-close').addEventListener('click', () => { aiContextModal.style.display = 'none'; });
   $('metadata-close').addEventListener('click', closeMetadataModal);
   $('folder-close').addEventListener('click', closeFolderModal);
+  $('import-close').addEventListener('click', closeImportModal);
   btnQuickAddClose.addEventListener('click', closeQuickAddModal);
   btnQuickAddCancel.addEventListener('click', closeQuickAddModal);
+  btnImportClear.addEventListener('click', clearImportModal);
+  btnImportPreview.addEventListener('click', previewImportedTable);
+  btnImportApply.addEventListener('click', applyImportedTable);
   btnQuickAddClear.addEventListener('click', () => {
     quickAddSearch.value = '';
     state.quickAddQuery = '';
@@ -290,6 +305,11 @@ function wireModals() {
       closeQuickAddModal();
     }
   });
+  importModal.addEventListener('click', event => {
+    if (event.target === importModal) {
+      closeImportModal();
+    }
+  });
 
   btnMetadataSave.addEventListener('click', saveMetadataOverride);
   btnMetadataReset.addEventListener('click', clearMetadataOverride);
@@ -298,6 +318,10 @@ function wireModals() {
   quickAddSearch.addEventListener('input', () => {
     state.quickAddQuery = quickAddSearch.value.trim().toLowerCase();
     renderQuickAddList();
+  });
+  importText.addEventListener('input', () => {
+    hideImportError();
+    btnImportApply.disabled = true;
   });
 
   debugSearch.addEventListener('input', () => renderDebugOutput(debugTables));
@@ -1196,6 +1220,7 @@ function buildCard(table, { titleOverride = null } = {}) {
       ${units ? `<span class="card-units">${escapeHtml(units)}</span>` : ''}
       ${dims ? `<span class="card-dims">${dims}</span>` : ''}
       <button class="card-edit-meta" type="button" title="Edit table name and descriptions">edit</button>
+      <button class="card-import" type="button" title="Import AI-generated table text">Import AI</button>
       <button class="btn-copy card-copy" type="button" title="Copy for AI">Copy for AI</button>
     </div>
     <div class="card-body">
@@ -1203,7 +1228,7 @@ function buildCard(table, { titleOverride = null } = {}) {
     </div>`;
 
   card.querySelector('.card-header').addEventListener('click', event => {
-    if (event.target.closest('.card-expander, .card-copy, .card-edit-meta')) {
+    if (event.target.closest('.card-expander, .card-copy, .card-edit-meta, .card-import')) {
       return;
     }
     selectTable(table.table_id);
@@ -1222,6 +1247,11 @@ function buildCard(table, { titleOverride = null } = {}) {
   card.querySelector('.card-edit-meta').addEventListener('click', event => {
     event.stopPropagation();
     openMetadataModal(table.table_id);
+  });
+
+  card.querySelector('.card-import').addEventListener('click', event => {
+    event.stopPropagation();
+    openImportModal(table.table_id);
   });
 
   if (table.editable && !table.error) {
@@ -2478,6 +2508,172 @@ function clearMetadataOverride() {
   closeMetadataModal();
   renderList();
   showToast('Local metadata override cleared.');
+}
+
+function openImportModal(tableId) {
+  state.importTableId = tableId;
+  state.importPreview = null;
+  importText.value = '';
+  importMode.value = 'values_only';
+  importSummary.innerHTML = '';
+  importCompare.innerHTML = '';
+  hideImportError();
+  btnImportApply.disabled = true;
+  importModal.style.display = 'flex';
+  importText.focus();
+}
+
+function closeImportModal() {
+  importModal.style.display = 'none';
+  state.importTableId = null;
+  state.importPreview = null;
+  importSummary.innerHTML = '';
+  importCompare.innerHTML = '';
+  hideImportError();
+  btnImportApply.disabled = true;
+}
+
+function clearImportModal() {
+  importText.value = '';
+  state.importPreview = null;
+  importSummary.innerHTML = '';
+  importCompare.innerHTML = '';
+  hideImportError();
+  btnImportApply.disabled = true;
+  importText.focus();
+}
+
+function showImportError(message) {
+  importError.textContent = message;
+  importError.style.display = 'block';
+}
+
+function hideImportError() {
+  importError.style.display = 'none';
+}
+
+async function previewImportedTable() {
+  if (!state.session?.session_id || !state.importTableId) {
+    showImportError('Load a session and select a table before importing.');
+    return;
+  }
+  hideImportError();
+  const response = await fetch(`/api/session/${state.session.session_id}/import-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      table_id: state.importTableId,
+      import_text: importText.value,
+      mode: importMode.value,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showImportError(data.error || 'Import preview failed.');
+    btnImportApply.disabled = true;
+    return;
+  }
+  state.importPreview = data.preview;
+  renderImportPreview();
+  btnImportApply.disabled = false;
+}
+
+async function applyImportedTable() {
+  if (!state.session?.session_id || !state.importTableId) {
+    return;
+  }
+  hideImportError();
+  const response = await fetch(`/api/session/${state.session.session_id}/import-apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      table_id: state.importTableId,
+      import_text: importText.value,
+      mode: importMode.value,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showImportError(data.error || 'Import apply failed.');
+    return;
+  }
+  state.session = data.session || state.session;
+  state.tables = state.tables.map(table => (table.table_id === state.importTableId ? data.table : table));
+  updateDraftToolbar();
+  renderList();
+  closeImportModal();
+  showToast('Imported table applied to draft.');
+}
+
+function renderImportPreview() {
+  const preview = state.importPreview;
+  const table = state.tables.find(item => item.table_id === state.importTableId);
+  if (!preview || !table) {
+    importSummary.innerHTML = '';
+    importCompare.innerHTML = '';
+    return;
+  }
+  const axisSummary = preview.axis_summary || { x_changed_count: 0, y_changed_count: 0 };
+  const validation = preview.validation || {};
+  importSummary.innerHTML = `
+    <div class="overview-summary">
+      <div class="overview-stat">
+        <span class="overview-stat__value">${preview.summary.changed_cell_count}</span>
+        <span class="overview-stat__label">Changed Cells</span>
+      </div>
+      <div class="overview-stat">
+        <span class="overview-stat__value">${axisSummary.x_changed_count}</span>
+        <span class="overview-stat__label">X Axis Changes</span>
+      </div>
+      <div class="overview-stat">
+        <span class="overview-stat__value">${axisSummary.y_changed_count}</span>
+        <span class="overview-stat__label">Y Axis Changes</span>
+      </div>
+      <div class="overview-stat">
+        <span class="overview-stat__value">${validation.rows}x${validation.cols}</span>
+        <span class="overview-stat__label">Imported Shape</span>
+      </div>
+    </div>
+    <div class="desc-short">
+      Mode: ${escapeHtml(preview.mode)} · Delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
+    </div>
+  `;
+  importCompare.innerHTML = `
+    <div class="import-compare__column">
+      <div class="import-compare__title">Current Table</div>
+      ${buildImportCompareTable(table, table.grid, table.x_labels, table.y_labels, preview.changes || [], false)}
+    </div>
+    <div class="import-compare__column">
+      <div class="import-compare__title">Imported Preview</div>
+      ${buildImportCompareTable(table, preview.import_grid || table.grid, preview.import_x_labels || table.x_labels, preview.import_y_labels || table.y_labels, preview.changes || [], true)}
+    </div>
+  `;
+}
+
+function buildImportCompareTable(table, grid, xLabels, yLabels, changes, importedSide) {
+  if (table.rows === 1 && table.cols === 1) {
+    const current = formatNumber(grid?.[0]?.[0] ?? 0);
+    return `<div class="import-scalar${importedSide ? ' is-imported' : ''}">${current}${table.units ? ` <span class="scalar-units">[${escapeHtml(table.units)}]</span>` : ''}</div>`;
+  }
+  const changedLookup = new Set((changes || []).map(change => `${change.row}:${change.col}`));
+  let html = '<div class="table-scroll"><table class="data-table import-compare-table"><thead><tr>';
+  html += `<th class="row-header">${yLabels?.length ? 'Y / X' : ''}</th>`;
+  for (let col = 0; col < table.cols; col += 1) {
+    const label = xLabels && xLabels[col] !== undefined ? formatNumber(xLabels[col]) : `C${col}`;
+    html += `<th>${escapeHtml(label)}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+  for (let row = 0; row < table.rows; row += 1) {
+    const rowLabel = yLabels && yLabels[row] !== undefined ? formatNumber(yLabels[row]) : `R${row}`;
+    html += `<tr><td class="row-label">${escapeHtml(rowLabel)}</td>`;
+    for (let col = 0; col < table.cols; col += 1) {
+      const key = `${row}:${col}`;
+      html += `<td class="table-cell${changedLookup.has(key) ? (importedSide ? ' is-preview' : ' is-selected-cell') : ''}">${escapeHtml(formatNumber((grid[row] || [])[col] ?? 0))}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+  return html;
 }
 
 function copyForAI(table) {

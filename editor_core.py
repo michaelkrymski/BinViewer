@@ -336,6 +336,98 @@ class EditSession:
             'pending_edits': deepcopy(self.pending_edits),
         }
 
+    def preview_import(self, table_id: str, import_text: str, *, mode: str = 'values_only') -> dict:
+        """Parse an imported AI table block and preview the resulting table/axis changes."""
+        self._require_binding(table_id)
+        entry = self._current_tables[table_id]
+        if not entry.get('editable'):
+            raise ValueError(f'Table {table_id} is not editable')
+        if entry.get('error'):
+            raise ValueError(f"Table {table_id} cannot be edited: {entry['error']}")
+
+        parsed = parse_table_import_text(import_text, entry, mode=mode)
+        after_grid = deepcopy(parsed['grid']) if parsed['grid'] is not None else deepcopy(entry['grid'])
+        changes = summarize_changes(entry['grid'], after_grid)
+        x_changes = summarize_axis_changes(entry.get('x_labels') or [], parsed.get('x_labels'))
+        y_changes = summarize_axis_changes(entry.get('y_labels') or [], parsed.get('y_labels'))
+
+        return {
+            'table_id': table_id,
+            'table_title': entry['title'],
+            'mode': parsed['mode'],
+            'parsed_title': parsed.get('title'),
+            'summary': build_preview_summary(changes),
+            'changes': changes[:160],
+            'changes_truncated': len(changes) > 160,
+            'after_grid': after_grid,
+            'import_grid': deepcopy(parsed['grid']) if parsed['grid'] is not None else None,
+            'import_x_labels': deepcopy(parsed.get('x_labels')),
+            'import_y_labels': deepcopy(parsed.get('y_labels')),
+            'axis_summary': {
+                'x_changed_count': len(x_changes),
+                'y_changed_count': len(y_changes),
+                'x_changes': x_changes[:80],
+                'y_changes': y_changes[:80],
+            },
+            'validation': parsed['validation'],
+        }
+
+    def apply_import(self, table_id: str, import_text: str, *, mode: str = 'values_only') -> dict:
+        """Apply an imported AI table block into the draft session."""
+        preview = self.preview_import(table_id, import_text, mode=mode)
+        binding = self._require_binding(table_id)
+
+        self._history.append({
+            'working_bin': bytes(self.working_bin),
+            'pending_edits': deepcopy(self.pending_edits),
+            'dirty_table_ids': set(self.dirty_table_ids),
+        })
+
+        if preview['import_grid'] is not None:
+            write_grid_to_bin(self.working_bin, binding.table_def, preview['import_grid'])
+
+        if preview['import_x_labels'] is not None:
+            write_axis_values_to_bin(
+                self.working_bin,
+                binding.table_def,
+                'x',
+                preview['import_x_labels'],
+                changed_indices=[change['index'] for change in preview['axis_summary']['x_changes']],
+            )
+
+        if preview['import_y_labels'] is not None:
+            write_axis_values_to_bin(
+                self.working_bin,
+                binding.table_def,
+                'y',
+                preview['import_y_labels'],
+                changed_indices=[change['index'] for change in preview['axis_summary']['y_changes']],
+            )
+
+        self._refresh_table(table_id)
+        refreshed_table = self._current_tables[table_id]
+        edit_record = {
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'table_id': table_id,
+            'table_title': refreshed_table['title'],
+            'operation': 'import_table',
+            'selection': {'rows': refreshed_table['rows'], 'cols': refreshed_table['cols']},
+            'parameters': {
+                'mode': preview['mode'],
+                'parsed_title': preview.get('parsed_title'),
+                'x_axis_changed': preview['axis_summary']['x_changed_count'],
+                'y_axis_changed': preview['axis_summary']['y_changed_count'],
+            },
+            'summary': preview['summary'],
+        }
+        self.pending_edits.append(edit_record)
+        return {
+            'preview': drop_preview_grid(preview),
+            'table': deepcopy(refreshed_table),
+            'session': self.get_summary(),
+            'pending_edits': deepcopy(self.pending_edits),
+        }
+
     def undo_last(self) -> dict:
         """Undo the latest applied edit."""
         if not self._history:
@@ -730,11 +822,250 @@ def build_preview_summary(changes: list[dict]) -> dict:
     }
 
 
+def summarize_axis_changes(current_values: list[float], imported_values: list[float] | None) -> list[dict]:
+    """Return changed indices for an imported axis value list."""
+    if imported_values is None:
+        return []
+    changes = []
+    for index, current in enumerate(current_values):
+        imported = imported_values[index]
+        if values_close(current, imported):
+            continue
+        changes.append({
+            'index': index,
+            'before': current,
+            'after': imported,
+            'delta': imported - current,
+        })
+    return changes
+
+
 def drop_preview_grid(preview: dict) -> dict:
     """Strip heavy preview-only keys before returning apply responses."""
     result = dict(preview)
     result.pop('after_grid', None)
     return result
+
+
+def parse_table_import_text(import_text: str, current_table: dict, *, mode: str = 'values_only') -> dict:
+    """Parse pasted AI table text into values and optional axes."""
+    clean_mode = normalize_import_mode(mode)
+    text = strip_code_fences(import_text or '').strip()
+    if not text:
+        raise ValueError('Paste table text before previewing an import.')
+
+    title = extract_import_title(text)
+    x_values, y_values, value_lines = extract_import_sections(text)
+    if not value_lines:
+        value_lines = [line for line in text.splitlines() if line.strip()]
+
+    grid = parse_grid_lines(
+        value_lines,
+        expected_rows=current_table['rows'],
+        expected_cols=current_table['cols'],
+    )
+
+    if grid is None:
+        raise ValueError('Could not parse any numeric table values from the imported text.')
+
+    if len(grid) != current_table['rows'] or any(len(row) != current_table['cols'] for row in grid):
+        raise ValueError(
+            f"Imported values are {len(grid)}x{len(grid[0]) if grid else 0}, expected "
+            f"{current_table['rows']}x{current_table['cols']} for {current_table['title']}."
+        )
+
+    imported_x = None
+    imported_y = None
+    if clean_mode == 'values_and_axes':
+        if x_values is not None:
+            if len(x_values) != len(current_table.get('x_labels') or []):
+                raise ValueError(
+                    f"Imported X axis has {len(x_values)} values, expected {len(current_table.get('x_labels') or [])}."
+                )
+            imported_x = x_values
+        if y_values is not None:
+            if len(y_values) != len(current_table.get('y_labels') or []):
+                raise ValueError(
+                    f"Imported Y axis has {len(y_values)} values, expected {len(current_table.get('y_labels') or [])}."
+                )
+            imported_y = y_values
+
+    validation = {
+        'rows': len(grid),
+        'cols': len(grid[0]) if grid else 0,
+        'expected_rows': current_table['rows'],
+        'expected_cols': current_table['cols'],
+        'x_axis_supplied': imported_x is not None,
+        'y_axis_supplied': imported_y is not None,
+        'x_axis_matches': imported_x is None or len(imported_x) == len(current_table.get('x_labels') or []),
+        'y_axis_matches': imported_y is None or len(imported_y) == len(current_table.get('y_labels') or []),
+    }
+    return {
+        'mode': clean_mode,
+        'title': title,
+        'grid': grid,
+        'x_labels': imported_x,
+        'y_labels': imported_y,
+        'validation': validation,
+    }
+
+
+def normalize_import_mode(mode: str | None) -> str:
+    """Normalize UI import modes to the supported backend values."""
+    candidate = str(mode or 'values_only').strip().lower()
+    aliases = {
+        'values_only': 'values_only',
+        'values': 'values_only',
+        'grid_only': 'values_only',
+        'values_and_axes': 'values_and_axes',
+        'full': 'values_and_axes',
+    }
+    if candidate not in aliases:
+        raise ValueError(f'Unsupported import mode: {mode}')
+    return aliases[candidate]
+
+
+def strip_code_fences(text: str) -> str:
+    """Remove outer markdown code fences from pasted content."""
+    stripped = text.strip()
+    if stripped.startswith('```') and stripped.endswith('```'):
+        lines = stripped.splitlines()
+        if len(lines) >= 2:
+            return '\n'.join(lines[1:-1])
+    return text
+
+
+def extract_import_title(text: str) -> str | None:
+    """Extract a title from table import text when present."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith('Title:'):
+            return stripped.split(':', 1)[1].strip()
+        lower = stripped.lower()
+        if lower in {'[table import]', '[/table import]'}:
+            continue
+        if stripped.startswith('[') and stripped.endswith(']') and len(stripped) > 2:
+            return stripped[1:-1].strip()
+    return None
+
+
+def extract_import_sections(text: str) -> tuple[list[float] | None, list[float] | None, list[str]]:
+    """Extract optional X/Y axis sections and the values section."""
+    current = None
+    sections: dict[str, list[str]] = {'x': [], 'y': [], 'values': []}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if current == 'values':
+                sections['values'].append('')
+            continue
+        lower = line.lower()
+        if lower in {'[table import]', '[/table import]'}:
+            continue
+        if lower.startswith('mode:') or lower.startswith('title:') or lower.startswith('rows:') or lower.startswith('cols:'):
+            continue
+        if lower.startswith('x axis:'):
+            current = 'x'
+            remainder = line.split(':', 1)[1].strip()
+            if remainder:
+                sections['x'].append(remainder)
+            continue
+        if lower.startswith('y axis:'):
+            current = 'y'
+            remainder = line.split(':', 1)[1].strip()
+            if remainder:
+                sections['y'].append(remainder)
+            continue
+        if lower.startswith('values:'):
+            current = 'values'
+            remainder = line.split(':', 1)[1].strip()
+            if remainder:
+                sections['values'].append(remainder)
+            continue
+        if current in sections:
+            sections[current].append(line)
+
+    x_values = parse_axis_lines(sections['x']) if sections['x'] else None
+    y_values = parse_axis_lines(sections['y']) if sections['y'] else None
+    value_lines = sections['values']
+    return x_values, y_values, value_lines
+
+
+def parse_axis_lines(lines: list[str]) -> list[float]:
+    """Parse X/Y axis breakpoint lines into a flat numeric list."""
+    values: list[float] = []
+    for line in lines:
+        parts = [part.strip() for part in re.split(r'[,\|\t ]+', line) if part.strip()]
+        for part in parts:
+            values.append(float(part))
+    return values
+
+
+def parse_grid_lines(lines: list[str], *, expected_rows: int, expected_cols: int) -> list[list[float]] | None:
+    """Parse grid text from CSV, pipe, whitespace, or Copy-for-AI style blocks."""
+    rows: list[list[float]] = []
+    scalar_next_value = False
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or set(line) <= {'-', '+', '|'}:
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            continue
+        if scalar_next_value:
+            tokens = tokenize_import_line(line)
+            numeric_tokens = [token for token in tokens if is_numeric_token(token)]
+            if numeric_tokens:
+                return [[float(numeric_tokens[0])]]
+            scalar_next_value = False
+        if line.lower().startswith('value:'):
+            remainder = line.split(':', 1)[1].strip()
+            if remainder:
+                return [[float(tokenize_import_line(remainder)[0])]]
+            scalar_next_value = True
+            continue
+
+        tokens = tokenize_import_line(line)
+        if not tokens:
+            continue
+
+        numeric_flags = [is_numeric_token(token) for token in tokens]
+        if expected_cols > 0 and len(tokens) == expected_cols + 1 and not numeric_flags[0]:
+            if all(numeric_flags[1:]):
+                rows.append([float(token) for token in tokens[1:]])
+                continue
+        if expected_cols > 0 and len(tokens) >= expected_cols:
+            numeric_tokens = [token for token, numeric in zip(tokens, numeric_flags) if numeric]
+            if len(numeric_tokens) == expected_cols:
+                rows.append([float(token) for token in numeric_tokens])
+                continue
+        if all(numeric_flags):
+            rows.append([float(token) for token in tokens])
+    if not rows:
+        return None
+    if len(rows) == expected_rows + 1 and len(rows[0]) == expected_cols:
+        rows = rows[1:]
+    return rows
+
+
+def tokenize_import_line(line: str) -> list[str]:
+    """Split a possible table row into tokens while preserving numeric values."""
+    work = line.strip().strip('|')
+    if '|' in work:
+        return [part.strip() for part in work.split('|') if part.strip()]
+    if ',' in work:
+        return [part.strip() for part in work.split(',') if part.strip()]
+    return [part.strip() for part in re.split(r'\s+', work) if part.strip()]
+
+
+def is_numeric_token(token: str) -> bool:
+    """Return whether a token looks numeric."""
+    try:
+        float(token)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def write_axis_values_to_bin(bin_buffer: bytearray, table_def: dict, axis_name: str,

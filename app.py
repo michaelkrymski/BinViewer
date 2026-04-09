@@ -281,6 +281,40 @@ def api_session_axis(session_id):
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
 
 
+@app.route('/api/session/<session_id>/import-preview', methods=['POST'])
+def api_session_import_preview(session_id):
+    try:
+        session = SESSIONS.get(session_id)
+        payload = request.get_json(silent=True) or {}
+        preview = session.preview_import(
+            payload.get('table_id', ''),
+            payload.get('import_text', ''),
+            mode=payload.get('mode', 'values_only'),
+        )
+        return jsonify({'preview': preview, 'session': session.get_summary()})
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/session/<session_id>/import-apply', methods=['POST'])
+def api_session_import_apply(session_id):
+    try:
+        session = SESSIONS.get(session_id)
+        payload = request.get_json(silent=True) or {}
+        result = session.apply_import(
+            payload.get('table_id', ''),
+            payload.get('import_text', ''),
+            mode=payload.get('mode', 'values_only'),
+        )
+        return jsonify(result)
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
 @app.route('/api/session/<session_id>/undo', methods=['POST'])
 def api_session_undo(session_id):
     try:
