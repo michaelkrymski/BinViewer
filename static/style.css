@@ -483,6 +483,20 @@ table.data-table td.diff-changed .v2 { color: var(--green); }
   align-items: baseline;
   gap: .5rem;
 }
+.scalar-display--editable {
+  cursor: text;
+  border-radius: 0.8rem;
+  transition: box-shadow .12s ease, background .12s ease;
+}
+.scalar-display--editable.is-selected {
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,.96);
+  background: rgba(15, 23, 42, 0.78);
+}
+.scalar-display--editable.is-preview {
+  box-shadow:
+    inset 0 0 0 2px rgba(255,255,255,.96),
+    inset 0 0 0 4px rgba(245,158,11,.82);
+}
 .scalar-value {
   font-family: var(--font-mono);
   font-size: 1.6rem;
@@ -912,6 +926,30 @@ table.data-table td.diff-changed .v2 { color: var(--green); }
   background: var(--bg-hover);
 }
 
+.family-map-switcher {
+  display: inline-flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.family-map-chip {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.78);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 0.14rem 0.48rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.family-map-chip.is-active {
+  border-color: rgba(96, 165, 250, 0.58);
+  color: #dbeafe;
+  background: rgba(37, 99, 235, 0.2);
+}
+
 .family-chevron {
   color: var(--text-muted);
   transition: transform .2s;
@@ -1208,23 +1246,33 @@ table.data-table td.diff-changed .v2 { color: var(--green); }
 }
 
 .table-cell.is-selected {
-  box-shadow:
-    inset 0 0 0 2px rgba(255,255,255,.9),
-    inset 0 0 0 4px rgba(99,102,241,.96),
-    0 0 0 1px rgba(99,102,241,.28);
   transform: translateZ(0);
   z-index: 1;
 }
 
+.table-cell.is-selected-cell {
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,.94);
+}
+
+.table-cell.is-selection-top { box-shadow: inset 0 2px 0 rgba(255,255,255,.98); }
+.table-cell.is-selection-bottom { box-shadow: inset 0 -2px 0 rgba(255,255,255,.98); }
+.table-cell.is-selection-left { box-shadow: inset 2px 0 0 rgba(255,255,255,.98); }
+.table-cell.is-selection-right { box-shadow: inset -2px 0 0 rgba(255,255,255,.98); }
+.table-cell.is-selection-top.is-selection-left { box-shadow: inset 0 2px 0 rgba(255,255,255,.98), inset 2px 0 0 rgba(255,255,255,.98); }
+.table-cell.is-selection-top.is-selection-right { box-shadow: inset 0 2px 0 rgba(255,255,255,.98), inset -2px 0 0 rgba(255,255,255,.98); }
+.table-cell.is-selection-bottom.is-selection-left { box-shadow: inset 0 -2px 0 rgba(255,255,255,.98), inset 2px 0 0 rgba(255,255,255,.98); }
+.table-cell.is-selection-bottom.is-selection-right { box-shadow: inset 0 -2px 0 rgba(255,255,255,.98), inset -2px 0 0 rgba(255,255,255,.98); }
+
 .table-cell.is-preview {
-  box-shadow: inset 0 0 0 2px rgba(245,158,11,.72);
+  filter: brightness(1.08) saturate(1.08);
+}
+
+.table-cell.is-preview:not(.is-selected) {
+  box-shadow: inset 0 0 0 2px rgba(245,158,11,.82);
 }
 
 .table-cell.is-selected.is-preview {
-  box-shadow:
-    inset 0 0 0 2px rgba(255,255,255,.92),
-    inset 0 0 0 4px rgba(245,158,11,.95),
-    0 0 0 1px rgba(245,158,11,.28);
+  background-blend-mode: screen;
 }
 
 .data-table td.table-cell:hover {
@@ -2154,12 +2202,11 @@ header {
 }
 
 .table-cell.is-selected {
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.82), 0 0 0 1px rgba(96, 165, 250, 0.6);
-  filter: saturate(1.1) brightness(1.05);
+  filter: saturate(1.08) brightness(1.06);
 }
 
 .table-cell.is-preview {
-  box-shadow: inset 0 0 0 2px rgba(245, 158, 11, 0.86);
+  filter: saturate(1.12) brightness(1.08);
 }
 
 .table-cell.is-editing {

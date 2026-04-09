@@ -13,6 +13,27 @@ const WORKFLOW_BUCKET_ORDER = [
 ];
 
 const METADATA_STORAGE_KEY = 'tunerpro-viewer.metadata-overrides.v1';
+const EDITOR_PREFS_STORAGE_KEY = 'tunerpro-viewer.editor-prefs.v1';
+
+function loadEditorPrefs() {
+  try {
+    const raw = window.localStorage.getItem(EDITOR_PREFS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== 'object') {
+      return { operation: 'add_constant', value: 1 };
+    }
+    return {
+      operation: parsed.operation || 'add_constant',
+      value: Number.isFinite(Number(parsed.value)) ? parsed.value : 1,
+    };
+  } catch (error) {
+    return { operation: 'add_constant', value: 1 };
+  }
+}
+
+function saveEditorPrefs() {
+  window.localStorage.setItem(EDITOR_PREFS_STORAGE_KEY, JSON.stringify(state.lastEditorPreset));
+}
 
 const state = {
   files: { xdf: null, bin: null },
@@ -39,6 +60,8 @@ const state = {
   metadataOverrides: loadMetadataOverrides(),
   editingMetadataTableId: null,
   openState: { cards: new Set(), groups: new Set(), families: new Set() },
+  lastEditorPreset: loadEditorPrefs(),
+  selectionAnchors: {},
 };
 
 const AI_CONTEXT_PROMPT = `You are an expert automotive ECU tuning assistant. I will share ECU calibration data copied from TunerPro XDF Viewer.
@@ -770,13 +793,19 @@ function ensureSelectedTable(tables) {
 function selectTable(tableId) {
   state.selectedTableId = tableId;
   const table = state.tables.find(item => item.table_id === tableId);
+  if (table && getTableMapVariant(table) && !isGlobalTable(table)) {
+    state.selectedMap = getTableMapVariant(table);
+  }
+  if (table?.workflow_bucket) {
+    state.selectedCategory = table.workflow_bucket;
+  }
   if (table && isScalarTable(table) && !state.selections[tableId]) {
-    state.selections[tableId] = {
+    state.selections[tableId] = normalizeSelection({
       row_start: 0,
       row_end: Math.max(table.rows - 1, 0),
       col_start: 0,
       col_end: Math.max(table.cols - 1, 0),
-    };
+    });
   }
   btnToggleFavorite.disabled = !state.selectedTableId;
   renderList();
@@ -985,6 +1014,11 @@ function buildFamilySection(group) {
   const section = document.createElement('section');
   const familyKey = `family:${group.familyTitle}`;
   const isSelected = state.selectedTableId === group.representative.table_id;
+  const mapVariants = Array.from(new Map(
+    group.tables
+      .filter(table => getTableMapVariant(table))
+      .map(table => [getTableMapVariant(table), table]),
+  ).entries());
   section.className = `family-section${shouldOpen('families', familyKey, false) ? ' open' : ''}${isSelected ? ' is-selected' : ''}`;
   section.dataset.familyKey = familyKey;
   section.innerHTML = `
@@ -997,6 +1031,7 @@ function buildFamilySection(group) {
       <span class="card-type-badge badge-family">family</span>
       <span class="family-title">${escapeHtml(group.familyTitle)}</span>
       ${group.tables.some(isGlobalTable) ? '<span class="badge-global">global</span>' : group.tables.some(isInferredMapTable) ? `<span class="badge-inferred">${escapeHtml(getTableMapVariant(group.tables.find(isInferredMapTable)))} (Inferred)</span>` : ''}
+      ${mapVariants.length ? `<span class="family-map-switcher">${mapVariants.map(([mapLabel]) => `<button class="family-map-chip${mapLabel === state.selectedMap ? ' is-active' : ''}" type="button" data-family-map="${escapeHtml(mapLabel)}">${escapeHtml(mapLabel.replace('Map ', 'M'))}</button>`).join('')}</span>` : ''}
       <span class="family-count">${group.tables.length}</span>
     </div>
     <div class="family-body"></div>`;
@@ -1011,6 +1046,17 @@ function buildFamilySection(group) {
   section.querySelector('.family-expander').addEventListener('click', event => {
     event.stopPropagation();
     section.classList.toggle('open');
+  });
+
+  section.querySelectorAll('[data-family-map]').forEach(button => {
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      const mapLabel = button.dataset.familyMap;
+      const target = group.tables.find(table => getTableMapVariant(table) === mapLabel) || group.representative;
+      state.selectedMap = mapLabel;
+      state.selectedCategory = target.workflow_bucket || state.selectedCategory;
+      selectTable(target.table_id);
+    });
   });
 
   const body = section.querySelector('.family-body');
@@ -1118,7 +1164,7 @@ function findRepresentative(tables) {
 
 function buildCard(table, { titleOverride = null } = {}) {
   const card = document.createElement('article');
-  const shouldBeOpen = shouldOpen('cards', table.table_id, Boolean(state.previews[table.table_id]));
+  const shouldBeOpen = shouldOpen('cards', table.table_id, false);
   const isSelected = state.selectedTableId === table.table_id;
   card.className = `table-card${table.error ? ' has-error' : ''}${shouldBeOpen ? ' open' : ''}${isSelected ? ' is-selected' : ''}`;
   card.dataset.tableId = table.table_id;
@@ -1186,9 +1232,7 @@ function buildCard(table, { titleOverride = null } = {}) {
 }
 
 function renderInspector(visibleTables = []) {
-  const selected = visibleTables.find(table => table.table_id === state.selectedTableId)
-    || state.tables.find(table => table.table_id === state.selectedTableId)
-    || null;
+  const selected = visibleTables.find(table => table.table_id === state.selectedTableId) || null;
 
   if (!selected) {
     inspectorEmpty.style.display = '';
@@ -1296,18 +1340,11 @@ function buildEditorPanel(table) {
 
   const selection = state.selections[table.table_id];
   const preview = state.previews[table.table_id];
-  const formState = state.editorForms[table.table_id] || { operation: 'add_constant', value: 1 };
+  const formState = state.editorForms[table.table_id] || state.lastEditorPreset || { operation: 'add_constant', value: 1 };
   const showValue = !String(formState.operation).startsWith('interpolate');
-  const previewSummary = preview ? `
-    <div class="editor-preview-copy">
-      ${preview.summary.changed_cell_count} cells · delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}
-    </div>
-    ${(preview.changes || []).slice(0, 6).map(change => `
-      <div class="editor-preview-line">
-        R${change.row + 1} C${change.col + 1}: ${formatNumber(change.before)} -> ${formatNumber(change.after)}
-      </div>`).join('')}
-    ${preview.changes_truncated ? '<div class="editor-preview-line">…more cells omitted</div>' : ''}
-  ` : '<div class="editor-preview-copy">Select a region, then preview or apply an operation.</div>';
+  const previewSummary = preview
+    ? `<div class="editor-preview-copy">${preview.summary.changed_cell_count} cells previewed · delta ${formatNumber(preview.summary.min_delta)} to ${formatNumber(preview.summary.max_delta)}</div>`
+    : '<div class="editor-preview-copy">Select a region, then preview or apply an operation.</div>';
 
   return `
     <div class="editor-panel" data-table-id="${escapeHtml(table.table_id)}">
@@ -1355,12 +1392,19 @@ function buildInlineEditorBar(table) {
 }
 
 function buildScalar(table) {
-  const first = formatNumber(table.grid?.[0]?.[0] ?? 0);
+  const previewLookup = buildPreviewLookup(table.table_id);
+  const previewCell = previewLookup.get('0:0');
+  const scalarValue = previewCell ? previewCell.after : (table.grid?.[0]?.[0] ?? 0);
+  const first = formatNumber(scalarValue);
   const second = table.has_diff ? formatNumber(table.grid2?.[0]?.[0] ?? 0) : null;
+  const selected = selectionContains(state.selections[table.table_id], 0, 0);
+  const scalarClasses = ['scalar-display', 'scalar-display--editable'];
+  if (selected) scalarClasses.push('is-selected');
+  if (previewCell) scalarClasses.push('is-preview');
   if (second === null || first === second) {
-    return `<div class="scalar-display"><span class="scalar-value">${first}</span>${table.units ? `<span class="scalar-units">${escapeHtml(table.units)}</span>` : ''}</div>`;
+    return `<div class="${scalarClasses.join(' ')}" data-row="0" data-col="0"><span class="scalar-value">${first}</span>${table.units ? `<span class="scalar-units">${escapeHtml(table.units)}</span>` : ''}</div>`;
   }
-  return `<div class="scalar-display"><span class="scalar-value">${first}</span>${table.units ? `<span class="scalar-units">${escapeHtml(table.units)}</span>` : ''}<span class="scalar-diff"><span class="arrow">-></span><span class="new-val">${second}</span></span></div>`;
+  return `<div class="${scalarClasses.join(' ')}" data-row="0" data-col="0"><span class="scalar-value">${first}</span>${table.units ? `<span class="scalar-units">${escapeHtml(table.units)}</span>` : ''}<span class="scalar-diff"><span class="arrow">-></span><span class="new-val">${second}</span></span></div>`;
 }
 
 function buildTable(table) {
@@ -1383,11 +1427,14 @@ function buildTable(table) {
     const rowLabel = hasY && yLabels[row] !== undefined ? formatNumber(yLabels[row]) : `R${row}`;
     html += `<tr><td class="row-label">${escapeHtml(rowLabel)}</td>`;
     for (let col = 0; col < cols; col += 1) {
-      const current = formatNumber((grid[row] || [])[col] ?? 0);
+      const previewChange = previewLookup.get(`${row}:${col}`);
+      const displayValue = previewChange ? previewChange.after : ((grid[row] || [])[col] ?? 0);
+      const current = formatNumber(displayValue);
       const cellClasses = ['table-cell'];
       const heatmapStyle = buildHeatmapStyle(table, row, col);
       if (selectionContains(selection, row, col)) {
         cellClasses.push('is-selected');
+        cellClasses.push(...selectionEdgeClasses(selection, row, col));
       }
       if (previewLookup.has(`${row}:${col}`)) {
         cellClasses.push('is-preview');
@@ -1483,17 +1530,123 @@ function formatSelectionLabel(selection, table) {
   if (!selection) {
     return 'Selection: none';
   }
+  if (Array.isArray(selection.cells) && selection.cells.length) {
+    const count = selection.cells.length;
+    if (!selection.is_rectangular) {
+      return `Selection: ${count} cells across ${table.rows}x${table.cols}`;
+    }
+  }
   return `Selection: R${selection.row_start + 1}-${selection.row_end + 1} · C${selection.col_start + 1}-${selection.col_end + 1} of ${table.rows}x${table.cols}`;
 }
 
 function buildPreviewLookup(tableId) {
   const preview = state.previews[tableId];
-  const lookup = new Set();
+  const lookup = new Map();
   if (!preview) {
     return lookup;
   }
-  (preview.changes || []).forEach(change => lookup.add(`${change.row}:${change.col}`));
+  (preview.changes || []).forEach(change => lookup.set(`${change.row}:${change.col}`, change));
   return lookup;
+}
+
+function makeRectSelection(anchorRow, anchorCol, row, col) {
+  return {
+    row_start: Math.min(anchorRow, row),
+    row_end: Math.max(anchorRow, row),
+    col_start: Math.min(anchorCol, col),
+    col_end: Math.max(anchorCol, col),
+    is_rectangular: true,
+  };
+}
+
+function normalizeSelection(selection) {
+  if (!selection) {
+    return null;
+  }
+  if (Array.isArray(selection.cells) && selection.cells.length) {
+    const unique = [];
+    const seen = new Set();
+    selection.cells.forEach(cell => {
+      const row = Number(cell.row);
+      const col = Number(cell.col);
+      const key = `${row}:${col}`;
+      if (!Number.isFinite(row) || !Number.isFinite(col) || seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      unique.push({ row, col });
+    });
+    if (!unique.length) {
+      return null;
+    }
+    const rows = unique.map(cell => cell.row);
+    const cols = unique.map(cell => cell.col);
+    const rowStart = Math.min(...rows);
+    const rowEnd = Math.max(...rows);
+    const colStart = Math.min(...cols);
+    const colEnd = Math.max(...cols);
+    const area = (rowEnd - rowStart + 1) * (colEnd - colStart + 1);
+    return {
+      row_start: rowStart,
+      row_end: rowEnd,
+      col_start: colStart,
+      col_end: colEnd,
+      cells: unique,
+      is_rectangular: unique.length === area,
+    };
+  }
+  return {
+    row_start: Number(selection.row_start),
+    row_end: Number(selection.row_end),
+    col_start: Number(selection.col_start),
+    col_end: Number(selection.col_end),
+    is_rectangular: true,
+  };
+}
+
+function toggleCellSelection(selection, row, col) {
+  const current = selectionToCells(selection);
+  const key = `${row}:${col}`;
+  if (current.has(key)) {
+    current.delete(key);
+  } else {
+    current.set(key, { row, col });
+  }
+  return normalizeSelection({ cells: Array.from(current.values()) });
+}
+
+function selectionToCells(selection) {
+  const cells = new Map();
+  if (!selection) {
+    return cells;
+  }
+  if (Array.isArray(selection.cells) && selection.cells.length) {
+    selection.cells.forEach(cell => {
+      cells.set(`${cell.row}:${cell.col}`, { row: Number(cell.row), col: Number(cell.col) });
+    });
+    return cells;
+  }
+  for (let row = selection.row_start; row <= selection.row_end; row += 1) {
+    for (let col = selection.col_start; col <= selection.col_end; col += 1) {
+      cells.set(`${row}:${col}`, { row, col });
+    }
+  }
+  return cells;
+}
+
+function selectionEdgeClasses(selection, row, col) {
+  if (!selectionContains(selection, row, col)) {
+    return [];
+  }
+  if (!selection?.is_rectangular) {
+    return ['is-selected-cell'];
+  }
+  const classes = [];
+  if (row === selection.row_start) classes.push('is-selection-top');
+  if (row === selection.row_end) classes.push('is-selection-bottom');
+  if (col === selection.col_start) classes.push('is-selection-left');
+  if (col === selection.col_end) classes.push('is-selection-right');
+  return classes;
 }
 
 function buildHeatmapStyle(table, row, col) {
@@ -1533,6 +1686,9 @@ function selectionContains(selection, row, col) {
   if (!selection) {
     return false;
   }
+  if (Array.isArray(selection.cells) && selection.cells.length) {
+    return selection.cells.some(cell => Number(cell.row) === row && Number(cell.col) === col);
+  }
   return row >= selection.row_start
     && row <= selection.row_end
     && col >= selection.col_start
@@ -1543,16 +1699,28 @@ function wireEditableCard(card, table) {
   const tableId = table.table_id;
   wireEditableScope(card, table, { hasCellGrid: true });
 
-  card.querySelectorAll('.table-cell').forEach(cell => {
+  const interactiveCells = [...card.querySelectorAll('.table-cell, .scalar-display--editable')];
+  interactiveCells.forEach(cell => {
     cell.addEventListener('mousedown', event => {
       if (event.button !== 0) {
         return;
       }
       const row = Number(cell.dataset.row);
       const col = Number(cell.dataset.col);
-      dragSelection = { tableId, anchorRow: row, anchorCol: col };
-      state.selections[tableId] = { row_start: row, row_end: row, col_start: col, col_end: col };
+      const anchor = state.selectionAnchors[tableId] || { row, col };
       state.selectedTableId = tableId;
+
+      if (event.ctrlKey || event.metaKey) {
+        dragSelection = null;
+        state.selections[tableId] = toggleCellSelection(state.selections[tableId], row, col);
+      } else if (event.shiftKey) {
+        dragSelection = null;
+        state.selections[tableId] = normalizeSelection(makeRectSelection(anchor.row, anchor.col, row, col));
+      } else {
+        dragSelection = { tableId, anchorRow: row, anchorCol: col };
+        state.selections[tableId] = normalizeSelection(makeRectSelection(row, col, row, col));
+        state.selectionAnchors[tableId] = { row, col };
+      }
       delete state.previews[tableId];
       refreshEditableCard(card, table);
       event.preventDefault();
@@ -1564,12 +1732,7 @@ function wireEditableCard(card, table) {
       }
       const row = Number(cell.dataset.row);
       const col = Number(cell.dataset.col);
-      state.selections[tableId] = {
-        row_start: Math.min(dragSelection.anchorRow, row),
-        row_end: Math.max(dragSelection.anchorRow, row),
-        col_start: Math.min(dragSelection.anchorCol, col),
-        col_end: Math.max(dragSelection.anchorCol, col),
-      };
+      state.selections[tableId] = normalizeSelection(makeRectSelection(dragSelection.anchorRow, dragSelection.anchorCol, row, col));
       delete state.previews[tableId];
       refreshEditableCard(card, table);
     });
@@ -1597,6 +1760,11 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
         operation: operationSelect.value,
         value,
       };
+      state.lastEditorPreset = {
+        operation: operationSelect.value,
+        value,
+      };
+      saveEditorPrefs();
       valueWrap.style.display = operationSelect.value.startsWith('interpolate') ? 'none' : '';
     };
 
@@ -1608,12 +1776,13 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
 
     panel.querySelector('[data-editor-action="select-all"]').addEventListener('click', event => {
       event.stopPropagation();
-      state.selections[tableId] = {
+      state.selections[tableId] = normalizeSelection({
         row_start: 0,
         row_end: Math.max(table.rows - 1, 0),
         col_start: 0,
         col_end: Math.max(table.cols - 1, 0),
-      };
+      });
+      state.selectionAnchors[tableId] = { row: 0, col: 0 };
       delete state.previews[tableId];
       if (hasCellGrid) {
         refreshEditableCard(container, table);
@@ -1625,6 +1794,7 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
     panel.querySelector('[data-editor-action="clear-selection"]').addEventListener('click', event => {
       event.stopPropagation();
       delete state.selections[tableId];
+      delete state.selectionAnchors[tableId];
       delete state.previews[tableId];
       if (hasCellGrid) {
         refreshEditableCard(container, table);
@@ -1705,11 +1875,28 @@ function refreshEditableCard(card, table) {
   if (previewBox && !state.previews[table.table_id]) {
     previewBox.innerHTML = '<div class="editor-preview-copy">Select a region, then preview or apply an operation.</div>';
   }
-  card.querySelectorAll('.table-cell').forEach(cell => {
+  card.querySelectorAll('.table-cell, .scalar-display--editable').forEach(cell => {
     const row = Number(cell.dataset.row);
     const col = Number(cell.dataset.col);
-    cell.classList.toggle('is-selected', selectionContains(selection, row, col));
+    const selected = selectionContains(selection, row, col);
+    cell.classList.toggle('is-selected', selected);
     cell.classList.toggle('is-preview', previewLookup.has(`${row}:${col}`));
+    ['is-selection-top', 'is-selection-bottom', 'is-selection-left', 'is-selection-right', 'is-selected-cell']
+      .forEach(name => cell.classList.remove(name));
+    if (selected) {
+      selectionEdgeClasses(selection, row, col).forEach(name => cell.classList.add(name));
+    }
+    if (cell.classList.contains('table-cell')) {
+      const previewChange = previewLookup.get(`${row}:${col}`);
+      cell.textContent = formatNumber(previewChange ? previewChange.after : ((table.grid[row] || [])[col] ?? 0));
+    } else if (cell.classList.contains('scalar-display--editable')) {
+      const previewChange = previewLookup.get('0:0');
+      const scalarValue = previewChange ? previewChange.after : (table.grid?.[0]?.[0] ?? 0);
+      const valueNode = cell.querySelector('.scalar-value');
+      if (valueNode) {
+        valueNode.textContent = formatNumber(scalarValue);
+      }
+    }
   });
 }
 
@@ -1741,8 +1928,11 @@ function beginInlineCellEdit(cell, table) {
         showToast('Enter a valid numeric value.');
         return;
       }
-      state.selections[table.table_id] = { row_start: row, row_end: row, col_start: col, col_end: col };
+      state.selections[table.table_id] = normalizeSelection({ row_start: row, row_end: row, col_start: col, col_end: col });
+      state.selectionAnchors[table.table_id] = { row, col };
       state.editorForms[table.table_id] = { operation: 'set_cells', value };
+      state.lastEditorPreset = { operation: 'set_cells', value };
+      saveEditorPrefs();
       await runEditorAction(table.table_id, false);
     } else if (event.key === 'Escape') {
       event.preventDefault();
@@ -1762,13 +1952,13 @@ async function runEditorAction(tableId, previewOnly) {
     showToast('No active editing session.');
     return;
   }
-  const selection = state.selections[tableId];
+  const selection = normalizeSelection(state.selections[tableId]);
   if (!selection) {
     showToast('Select a table region first.');
     return;
   }
 
-  const formState = state.editorForms[tableId] || { operation: 'add_constant', value: 1 };
+  const formState = state.editorForms[tableId] || state.lastEditorPreset || { operation: 'add_constant', value: 1 };
   const payload = {
     table_id: tableId,
     operation: formState.operation,
@@ -1793,7 +1983,13 @@ async function runEditorAction(tableId, previewOnly) {
 
   if (previewOnly) {
     state.previews[tableId] = data.preview;
-    renderList();
+    const currentCard = document.querySelector(`.table-card[data-table-id="${CSS.escape(tableId)}"]`);
+    const currentTable = state.tables.find(item => item.table_id === tableId);
+    if (currentCard && currentTable) {
+      refreshEditableCard(currentCard, currentTable);
+    } else {
+      renderList();
+    }
     showToast('Preview ready.');
     return;
   }

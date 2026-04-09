@@ -5,7 +5,7 @@
 
 ## Active Branch / Workspace
 - Real repo branch: `codex/editor-mvp`
-- Working copy: `C:\Users\Michael Krymski\Documents\Playground\TunerPro Converter`
+- Working copy: `C:\Users\Michael Krymski\Documents\TunerPro Converter`
 
 ## Completed
 - Read-only viewer baseline preserved and tagged as `v0.1-readonly-baseline`.
@@ -33,15 +33,19 @@
 - Added a quick-add folder modal with search and bulk checkbox assignment for tables and families.
 - Added friendlier XDF format detection so binary/proprietary XDF files fail with a clear message instead of a raw XML parser traceback.
 - Added a first-class CLI `compare` command for mapped table diffs plus raw byte ranges, and made folders act as a real browse filter in the workspace.
+- Added AI-friendly CLI discovery commands and selectors: `describe`, `maps`, `families`, selector-based target resolution for `show`/`apply`/`axis`, and a chainable `batch` manifest runner.
 
 ## In Progress
+- WIP: Polish web editing interactions for real-world tune entry, including persistent last-used operation, better single-cell editing, ctrl/shift selection behavior, stronger selection outlines, preview-in-grid rendering, and family-local map switching.
 - WIP: Polish favorites/folder management so family-level starring, folder ordering, and richer assignment controls feel complete in the new shell.
 - WIP: Deepen compare-mode presentation with richer XDF overlap context for raw ranges and more detailed changed-cell summaries.
 
 ## Next Up
+- Add nearest-XDF context and folder/category grouping to CLI compare output so agent summaries are even more actionable.
+- Expand CLI batch manifests with optional preview-only and export steps in one pass.
 - Add family-level starring and easier folder assignment directly from family rows.
 - Improve compare mode with nearest XDF definitions for unmapped raw ranges and a denser changed-table summary.
-- Do a live browser pass on the persistent shell to tighten any remaining UI regressions around inline editing and inspector scrolling.
+- Do a live browser pass on the persistent shell to tighten any remaining UI regressions around inline editing, selection behavior, preview rendering, and inspector/map synchronization.
 
 ## Blockers / Questions
 - Family-level favorites and AI-driven folder assignment are not finished yet, so the current preferences flow is strongest at the table level.
@@ -73,3 +77,8 @@
 - 2026-04-09: Binary/proprietary XDF detection verified against `Oil_Pressure_Tables_000021571DAA01_DEV.xdf`; parser now returns a clean user-facing format error and `/api/parse` returns `400`.
 - 2026-04-09: `tuner_cli.py compare` verified against `000021571DAA01.xdf`, `Stock_TestCLI.bin`, and `Stock_TestCLIManual.bin`, returning mapped changed tables plus raw diff ranges.
 - 2026-04-09: Flask test-client `GET /` confirmed the folder filter controls are present in the workspace shell.
+- 2026-04-09: Byte-for-byte compare between `Stock---Copy-edited-edited.bin` (web export) and `E85v2.bin` returned `diff_count 0`, matching on raw bytes, SHA-256, mapped tables, and raw ranges.
+- 2026-04-09: Replayed the full `63`-edit web changelog set onto `Stock - Copy.bin` through `editor_core.py` / CLI session replay and exported `cli_replay_E85v2.bin`; byte-for-byte compare against `E85v2.bin` returned `diff_count 0`.
+- 2026-04-09: `tuner_cli.py --json describe`, `maps`, and `families` verified against a real session, returning command schemas, detected maps, and family/member listings suitable for agent discovery.
+- 2026-04-09: Selector-based table resolution verified by resolving `Fuel (Main)` + `Map 2` to the primary table instead of axis companions.
+- 2026-04-09: `tuner_cli.py batch` verified with a JSON manifest applying a selector-based edit step, then the session was reset cleanly afterward.

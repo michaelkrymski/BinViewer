@@ -539,9 +539,48 @@ def normalize_operation_name(value: str) -> str:
 
 
 def normalize_selection(selection: dict, rows: int, cols: int) -> dict:
-    """Normalize and validate a rectangular selection."""
+    """Normalize and validate a rectangular or explicit-cell selection."""
     if rows <= 0 or cols <= 0:
         raise ValueError('Selection is only available for non-empty tables')
+
+    raw_cells = selection.get('cells')
+    if isinstance(raw_cells, list) and raw_cells:
+        cells: list[dict] = []
+        seen: set[tuple[int, int]] = set()
+        for item in raw_cells:
+            if not isinstance(item, dict):
+                continue
+            row = int(item.get('row', 0))
+            col = int(item.get('col', 0))
+            if row < 0 or row >= rows:
+                raise ValueError(f'Row selection {row} outside table bounds 0:{rows - 1}')
+            if col < 0 or col >= cols:
+                raise ValueError(f'Column selection {col} outside table bounds 0:{cols - 1}')
+            key = (row, col)
+            if key in seen:
+                continue
+            seen.add(key)
+            cells.append({'row': row, 'col': col})
+
+        if not cells:
+            raise ValueError('Selection must include at least one cell')
+
+        row_values = [cell['row'] for cell in cells]
+        col_values = [cell['col'] for cell in cells]
+        row_start = min(row_values)
+        row_end = max(row_values)
+        col_start = min(col_values)
+        col_end = max(col_values)
+        area = (row_end - row_start + 1) * (col_end - col_start + 1)
+        is_rectangular = len(cells) == area
+        return {
+            'row_start': row_start,
+            'row_end': row_end,
+            'col_start': col_start,
+            'col_end': col_end,
+            'cells': cells,
+            'is_rectangular': is_rectangular,
+        }
 
     row_start = int(selection.get('row_start', selection.get('row', 0)))
     row_end = int(selection.get('row_end', row_start))
@@ -561,6 +600,7 @@ def normalize_selection(selection: dict, rows: int, cols: int) -> dict:
         'row_end': row_end,
         'col_start': col_start,
         'col_end': col_end,
+        'is_rectangular': True,
     }
 
 
@@ -583,30 +623,30 @@ def apply_operation_to_grid(grid: list[list[float]], selection: dict, operation:
     col_end = selection['col_end']
 
     new_grid = deepcopy(grid)
+    selected_cells = list(iter_selection_cells(selection))
 
     if op == 'set_cells':
         if value is None:
             raise ValueError('set_cells requires a numeric value parameter')
-        for row in range(row_start, row_end + 1):
-            for col in range(col_start, col_end + 1):
-                new_grid[row][col] = value
+        for row, col in selected_cells:
+            new_grid[row][col] = value
         return new_grid
 
     if op == 'add_constant':
         if value is None:
             raise ValueError('add_constant requires a numeric value parameter')
-        for row in range(row_start, row_end + 1):
-            for col in range(col_start, col_end + 1):
-                new_grid[row][col] = new_grid[row][col] + value
+        for row, col in selected_cells:
+            new_grid[row][col] = new_grid[row][col] + value
         return new_grid
 
     if op == 'multiply':
         if value is None:
             raise ValueError('multiply requires a numeric value parameter')
-        for row in range(row_start, row_end + 1):
-            for col in range(col_start, col_end + 1):
-                new_grid[row][col] = new_grid[row][col] * value
+        for row, col in selected_cells:
+            new_grid[row][col] = new_grid[row][col] * value
         return new_grid
+
+    ensure_rectangular_selection(selection, op)
 
     if op == 'interpolate_x':
         if col_start == col_end:
@@ -1004,10 +1044,27 @@ def quantize_grid_region_for_display(grid: list[list[float]], selection: dict, d
     if decimal_places is None or decimal_places < 0:
         return deepcopy(grid)
     rounded = deepcopy(grid)
+    for row, col in iter_selection_cells(selection):
+        rounded[row][col] = round(float(rounded[row][col]), int(decimal_places))
+    return rounded
+
+
+def iter_selection_cells(selection: dict):
+    """Yield selected cells for either rectangular or explicit-cell selections."""
+    if selection.get('cells'):
+        for cell in selection['cells']:
+            yield int(cell['row']), int(cell['col'])
+        return
     for row in range(selection['row_start'], selection['row_end'] + 1):
         for col in range(selection['col_start'], selection['col_end'] + 1):
-            rounded[row][col] = round(float(rounded[row][col]), int(decimal_places))
-    return rounded
+            yield row, col
+
+
+def ensure_rectangular_selection(selection: dict, operation: str) -> None:
+    """Require contiguous rectangular selections for interpolation operations."""
+    if selection.get('is_rectangular', True):
+        return
+    raise ValueError(f'{operation} requires a rectangular selection')
 
 
 def representable_values_close(actual: float, target: float, *, equation: str = 'X',

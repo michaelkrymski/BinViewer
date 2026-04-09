@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import time
+from collections import Counter, defaultdict
 
 from editor_core import EditSession, load_session_file, save_session_file
 
@@ -26,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest='command', required=True)
 
     subparsers.add_parser('commands', help='List the available commands and what they do')
+    describe_parser = subparsers.add_parser('describe', help='Describe commands, operations, selectors, and output shapes for agents')
+    describe_parser.add_argument('--command-name', help='Optional command to describe in detail')
 
     parse_parser = subparsers.add_parser('parse', help='Create a session from an XDF and BIN')
     parse_parser.add_argument('xdf', help='Path to the XDF file')
@@ -42,27 +45,39 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser('list', help='List tables and families in the current session')
     list_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
     list_parser.add_argument('--bucket', help='Workflow bucket filter substring')
+    list_parser.add_argument('--map', dest='map_name', help='Map label filter such as "Map 1"')
     list_parser.add_argument('--search', help='Title/family search filter')
     list_parser.add_argument('--limit', type=int, default=200, help='Maximum number of rows to print')
 
+    maps_parser = subparsers.add_parser('maps', help='List detected maps, shared/global rows, and bucket counts in the current session')
+    maps_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
+
+    families_parser = subparsers.add_parser('families', help='List family groups with map variants and member table ids')
+    families_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
+    families_parser.add_argument('--map', dest='map_name', help='Map label filter such as "Map 1"')
+    families_parser.add_argument('--search', help='Family/title filter')
+    families_parser.add_argument('--limit', type=int, default=200, help='Maximum number of families to print')
+
     show_parser = subparsers.add_parser('show', help='Print one table with labels and values')
-    show_parser.add_argument('table_id', help='Stable table_id from list output')
+    show_parser.add_argument('table_id', nargs='?', help='Stable table_id from list output')
     show_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
+    add_target_selector_args(show_parser)
 
     diff_parser = subparsers.add_parser('diff', help='Summarize pending edits and dirty tables')
     diff_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
 
     apply_parser = subparsers.add_parser('apply', help='Preview or apply one bounded edit operation')
-    apply_parser.add_argument('table_id', help='Stable table_id from list output')
+    apply_parser.add_argument('table_id', nargs='?', help='Stable table_id from list output')
     apply_parser.add_argument('operation', help='set, add, multiply, interpolate-x, interpolate-y, interpolate-xy')
     apply_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
     apply_parser.add_argument('--value', type=float, help='Numeric value for set/add/multiply')
     apply_parser.add_argument('--rows', help='1-based inclusive row selection, e.g. 2:5')
     apply_parser.add_argument('--cols', help='1-based inclusive column selection, e.g. 3:8')
     apply_parser.add_argument('--preview', action='store_true', help='Preview only; do not mutate the session')
+    add_target_selector_args(apply_parser)
 
     axis_parser = subparsers.add_parser('axis', help='Preview or apply direct X/Y breakpoint edits')
-    axis_parser.add_argument('table_id', help='Stable table_id from list output')
+    axis_parser.add_argument('table_id', nargs='?', help='Stable table_id from list output')
     axis_parser.add_argument('axis', help='Axis name: x or y')
     axis_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
     axis_parser.add_argument(
@@ -71,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='Comma-separated full axis values, e.g. 8.33,33.44,55,75,...',
     )
     axis_parser.add_argument('--preview', action='store_true', help='Preview only; do not mutate the session')
+    add_target_selector_args(axis_parser)
 
     undo_parser = subparsers.add_parser('undo', help='Undo the most recent applied edit')
     undo_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
@@ -82,7 +98,19 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument('output_bin', help='Output BIN path for the edited draft')
     export_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
 
+    batch_parser = subparsers.add_parser('batch', help='Run a JSON manifest of chained apply/axis/export steps')
+    batch_parser.add_argument('manifest', help='Path to a JSON batch manifest')
+    batch_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
+
     return parser
+
+
+def add_target_selector_args(parser: argparse.ArgumentParser) -> None:
+    """Add agent-friendly table target selectors to a command parser."""
+    parser.add_argument('--title', help='Exact or substring title selector')
+    parser.add_argument('--family', help='Exact or substring family selector')
+    parser.add_argument('--map', dest='map_name', help='Map label such as "Map 1"')
+    parser.add_argument('--bucket', help='Workflow bucket selector')
 
 
 def emit(args, payload) -> int:
@@ -94,9 +122,12 @@ def emit(args, payload) -> int:
     command = getattr(args, 'command', '')
     if command == 'commands':
         print('commands')
+        print('  describe Describe commands, operations, selectors, and output contracts')
         print('  parse   Create/update a session file from XDF + BIN inputs')
         print('  compare Compare two BINs with one XDF and summarize mapped + raw changes')
         print('  list    List tables with ids, buckets, dirty state, and dimensions')
+        print('  maps    List detected maps, shared rows, and bucket counts')
+        print('  families List family groups with map variants and member tables')
         print('  show    Print one table in a copy-for-AI style grid')
         print('  diff    Show pending edits and dirty tables')
         print('  apply   Preview or apply bounded edit operations')
@@ -104,6 +135,29 @@ def emit(args, payload) -> int:
         print('  undo    Undo the latest applied edit')
         print('  reset   Reset the draft to the original BIN')
         print('  export  Write the edited BIN plus companion change log')
+        print('  batch   Execute a JSON manifest of chained steps')
+        return 0
+
+    if command == 'describe':
+        if payload.get('command'):
+            print(f"command: {payload['command']['name']}")
+            print(payload['command']['summary'])
+            print('selectors')
+            for selector in payload['command'].get('selectors', []):
+                print(f"  {selector}")
+            print('arguments')
+            for item in payload['command'].get('arguments', []):
+                print(f"  {item}")
+            return 0
+        print('commands')
+        for item in payload['commands']:
+            print(f"  {item['name']}  {item['summary']}")
+        print('operations')
+        for op in payload['operations']:
+            print(f"  {op['name']}  {op['summary']}")
+        print('selectors')
+        for selector in payload['selectors']:
+            print(f"  {selector}")
         return 0
 
     if command == 'parse':
@@ -136,10 +190,28 @@ def emit(args, payload) -> int:
         for table in payload['tables']:
             dims = f"{table['rows']}x{table['cols']}" if table['rows'] and table['cols'] else '-'
             dirty = 'dirty' if table.get('is_dirty') else 'clean'
-            print(f"{table['table_id']} | {table['workflow_bucket']} | {dims} | {dirty} | {table['title']}")
+            map_name = table.get('effective_map_variant') or table.get('map_variant') or ('Global' if table.get('is_shared_global') else '-')
+            print(f"{table['table_id']} | {map_name} | {table['workflow_bucket']} | {dims} | {dirty} | {table['title']}")
+        return 0
+
+    if command == 'maps':
+        print(f"maps: {len(payload['maps'])} | shared rows: {payload['shared_table_count']}")
+        for item in payload['maps']:
+            print(f"{item['map']} | tables={item['table_count']} | families={item['family_count']}")
+            for bucket in item['buckets'][:6]:
+                print(f"  {bucket['bucket']}: {bucket['table_count']}")
+        return 0
+
+    if command == 'families':
+        print(f"{len(payload['families'])} families")
+        for family in payload['families']:
+            variants = ', '.join(family['maps']) if family['maps'] else 'Global only'
+            print(f"{family['family_key']} | {family['family_title']} | maps={variants} | tables={family['table_count']}")
         return 0
 
     if command == 'show':
+        if payload.get('resolved_target'):
+            print(f"resolved: {payload['resolved_target']['table_id']} | {payload['resolved_target']['title']}")
         print(payload['formatted'])
         return 0
 
@@ -160,6 +232,8 @@ def emit(args, payload) -> int:
     if command == 'apply':
         preview = payload['preview']
         summary = preview['summary']
+        resolved = payload.get('resolved_target') or {'table_id': preview['table_id'], 'title': preview.get('table_title', preview['table_id'])}
+        print(f"resolved: {resolved['table_id']} | {resolved['title']}")
         print(
             f"{preview['table_id']} {preview['operation']} | "
             f"changed={summary['changed_cell_count']} "
@@ -171,6 +245,8 @@ def emit(args, payload) -> int:
 
     if command == 'axis':
         summary = payload['summary']
+        resolved = payload.get('resolved_target') or {'table_id': payload['table_id'], 'title': payload['table_id']}
+        print(f"resolved: {resolved['table_id']} | {resolved['title']}")
         print(
             f"{payload['table_id']} axis-{payload['axis']} | "
             f"changed={summary['changed_cell_count']} "
@@ -196,6 +272,16 @@ def emit(args, payload) -> int:
         print(f"log: {payload['log_path']}")
         return 0
 
+    if command == 'batch':
+        print(f"steps: {len(payload['steps'])}")
+        for step in payload['steps']:
+            status = step.get('status', 'ok')
+            print(f"{step['index']}. {step['action']} | {status} | {step.get('message', '')}".rstrip())
+        if payload.get('export'):
+            print(f"bin: {payload['export']['bin_path']}")
+            print(f"log: {payload['export']['log_path']}")
+        return 0
+
     print(payload)
     return 0
 
@@ -206,6 +292,126 @@ def load_required_session(path: str | Path) -> EditSession:
     if not session_path.exists():
         raise FileNotFoundError(f'Session file not found: {session_path}')
     return load_session_file(session_path)
+
+
+def get_table_map_name(table: dict) -> str | None:
+    """Return the effective map label for a table when one exists."""
+    return table.get('effective_map_variant') or table.get('map_variant') or None
+
+
+def build_selector_dict(args) -> dict:
+    """Extract target selector fields from argparse args."""
+    return {
+        'table_id': getattr(args, 'table_id', None),
+        'title': getattr(args, 'title', None),
+        'family': getattr(args, 'family', None),
+        'map': getattr(args, 'map_name', None),
+        'bucket': getattr(args, 'bucket', None),
+    }
+
+
+def selector_is_empty(selector: dict) -> bool:
+    """Return whether no target selector fields were provided."""
+    return not any(selector.get(key) for key in ('table_id', 'title', 'family', 'map', 'bucket'))
+
+
+def resolve_target_table(session: EditSession, selector: dict) -> dict:
+    """Resolve one table from table_id and/or friendly selectors."""
+    tables = session.list_tables()
+    candidates = tables
+
+    table_id = selector.get('table_id')
+    if table_id:
+        candidates = [table for table in candidates if table['table_id'] == table_id]
+        if not candidates:
+            raise ValueError(f'No table found for table_id: {table_id}')
+
+    title = selector.get('title')
+    if title:
+        exact = [table for table in candidates if str(table['title']).lower() == str(title).lower()]
+        candidates = exact or [table for table in candidates if str(title).lower() in str(table['title']).lower()]
+
+    family = selector.get('family')
+    if family:
+        exact = [table for table in candidates if str(table.get('family_title', '')).lower() == str(family).lower()]
+        candidates = exact or [table for table in candidates if str(family).lower() in str(table.get('family_title', '')).lower()]
+
+    map_name = selector.get('map')
+    if map_name:
+        map_query = str(map_name).lower()
+        candidates = [
+            table for table in candidates
+            if (get_table_map_name(table) and str(get_table_map_name(table)).lower() == map_query)
+            or (map_query == 'global' and table.get('is_shared_global'))
+        ]
+
+    bucket = selector.get('bucket')
+    if bucket:
+        bucket_query = str(bucket).lower()
+        candidates = [table for table in candidates if bucket_query in str(table.get('workflow_bucket', '')).lower()]
+
+    if not candidates:
+        raise ValueError(f'No table matched selectors: {json.dumps(selector)}')
+
+    candidates = prefer_primary_tables(candidates, selector)
+    if len(candidates) > 1:
+        sample = [
+            {
+                'table_id': item['table_id'],
+                'title': item['title'],
+                'family_title': item.get('family_title'),
+                'map': get_table_map_name(item),
+                'bucket': item.get('workflow_bucket'),
+            }
+            for item in candidates[:8]
+        ]
+        raise ValueError(f'Ambiguous table selectors: {json.dumps(sample, indent=2)}')
+    return candidates[0]
+
+
+def prefer_primary_tables(candidates: list[dict], selector: dict) -> list[dict]:
+    """Prefer main data tables over axis/autogen companions when selectors are broad."""
+    if len(candidates) <= 1:
+        return candidates
+
+    preferred = [item for item in candidates if not item.get('is_autogen')]
+    if preferred:
+        candidates = preferred
+
+    family = selector.get('family')
+    title = selector.get('title')
+    if family or title:
+        anchor = str(family or title).lower()
+        exact_title = [item for item in candidates if str(item.get('title', '')).lower() == anchor]
+        if exact_title:
+            return exact_title
+        main_family = [
+            item for item in candidates
+            if str(item.get('family_title', '')).lower() == anchor
+            and str(item.get('title', '')).lower() == str(item.get('family_title', '')).lower()
+        ]
+        if main_family:
+            return main_family
+
+    non_axis = [
+        item for item in candidates
+        if ' - ' not in str(item.get('title', ''))
+        and not str(item.get('title', '')).lower().endswith('(autogen)')
+    ]
+    if non_axis:
+        return non_axis
+    return candidates
+
+
+def build_resolved_target_payload(table: dict) -> dict:
+    """Return a compact target descriptor for agent-friendly output."""
+    return {
+        'table_id': table['table_id'],
+        'title': table['title'],
+        'family_title': table.get('family_title'),
+        'map': get_table_map_name(table),
+        'bucket': table.get('workflow_bucket'),
+    }
 
 
 @contextlib.contextmanager
@@ -356,6 +562,112 @@ def command_parse(args) -> dict:
     }
 
 
+def command_describe(args) -> dict:
+    """Describe commands, operations, selectors, and outputs for agent discovery."""
+    commands = [
+        {
+            'name': 'parse',
+            'summary': 'Create or refresh a session from XDF + BIN inputs.',
+            'arguments': ['xdf', 'bin', '--bin2 (optional)', '--session'],
+        },
+        {
+            'name': 'compare',
+            'summary': 'Compare two BINs with one XDF and return mapped + raw diffs.',
+            'arguments': ['xdf', 'base_bin', 'compare_bin', '--limit'],
+        },
+        {
+            'name': 'list',
+            'summary': 'List session tables with ids, maps, buckets, dimensions, and dirty state.',
+            'arguments': ['--session', '--bucket', '--map', '--search', '--limit'],
+        },
+        {
+            'name': 'maps',
+            'summary': 'List detected maps, shared rows, and bucket counts.',
+            'arguments': ['--session'],
+        },
+        {
+            'name': 'families',
+            'summary': 'List families, map variants, and member table ids.',
+            'arguments': ['--session', '--map', '--search', '--limit'],
+        },
+        {
+            'name': 'show',
+            'summary': 'Show one resolved table in a grid.',
+            'arguments': ['[table_id]', '--session', '--title', '--family', '--map', '--bucket'],
+            'selectors': ['table_id', 'title', 'family', 'map', 'bucket'],
+        },
+        {
+            'name': 'apply',
+            'summary': 'Preview or apply one bounded edit operation.',
+            'arguments': ['[table_id]', 'operation', '--session', '--rows', '--cols', '--value', '--preview', '--title', '--family', '--map', '--bucket'],
+            'selectors': ['table_id', 'title', 'family', 'map', 'bucket'],
+        },
+        {
+            'name': 'axis',
+            'summary': 'Preview or apply direct X/Y breakpoint edits.',
+            'arguments': ['[table_id]', 'axis', '--values', '--session', '--preview', '--title', '--family', '--map', '--bucket'],
+            'selectors': ['table_id', 'title', 'family', 'map', 'bucket'],
+        },
+        {
+            'name': 'diff',
+            'summary': 'Summarize pending edits and dirty tables in the current session.',
+            'arguments': ['--session'],
+        },
+        {
+            'name': 'undo',
+            'summary': 'Undo the most recent applied edit.',
+            'arguments': ['--session'],
+        },
+        {
+            'name': 'reset',
+            'summary': 'Reset the draft to the original BIN.',
+            'arguments': ['--session'],
+        },
+        {
+            'name': 'export',
+            'summary': 'Write the current draft BIN and companion change log.',
+            'arguments': ['output_bin', '--session'],
+        },
+        {
+            'name': 'batch',
+            'summary': 'Execute a chain of apply/axis/export steps from a JSON manifest.',
+            'arguments': ['manifest', '--session'],
+        },
+    ]
+    operations = [
+        {'name': 'set', 'summary': 'Set selected cells to one numeric value.'},
+        {'name': 'add', 'summary': 'Add a constant to the selected cells.'},
+        {'name': 'multiply', 'summary': 'Multiply the selected cells by a scalar.'},
+        {'name': 'interpolate-x', 'summary': 'Interpolate across the selected X span.'},
+        {'name': 'interpolate-y', 'summary': 'Interpolate across the selected Y span.'},
+        {'name': 'interpolate-xy', 'summary': 'Bilinear interpolate across the selected rectangle.'},
+    ]
+    selectors = [
+        'table_id: exact stable identifier from list/families output',
+        'title: exact or substring table title',
+        'family: exact or substring family title',
+        'map: map label such as "Map 1" or "Global"',
+        'bucket: workflow bucket substring such as "Boost" or "Fueling"',
+    ]
+    output_shapes = {
+        'show': ['table', 'formatted', 'resolved_target', 'session'],
+        'apply-preview': ['preview', 'resolved_target', 'session'],
+        'apply': ['preview', 'table', 'session', 'pending_edits', 'resolved_target'],
+        'axis-preview': ['table_id', 'axis', 'changes', 'summary', 'resolved_target', 'session'],
+        'compare': ['summary', 'tables', 'raw_ranges'],
+        'maps': ['maps', 'shared_table_count', 'session'],
+        'families': ['families', 'session'],
+        'batch': ['steps', 'session', 'export?'],
+    }
+    if args.command_name:
+        name = str(args.command_name).strip().lower()
+        command = next((item for item in commands if item['name'] == name), None)
+        if not command:
+            raise ValueError(f'Unknown command for describe: {args.command_name}')
+        return {'command': command, 'operations': operations, 'selectors': selectors, 'output_shapes': output_shapes}
+    return {'commands': commands, 'operations': operations, 'selectors': selectors, 'output_shapes': output_shapes}
+
+
 def command_compare(args) -> dict:
     session = EditSession(
         xdf_bytes=Path(args.xdf).read_bytes(),
@@ -396,6 +708,13 @@ def command_list(args) -> dict:
     if args.bucket:
         query = args.bucket.lower()
         tables = [table for table in tables if query in table.get('workflow_bucket', '').lower()]
+    if args.map_name:
+        map_query = args.map_name.lower()
+        tables = [
+            table for table in tables
+            if (get_table_map_name(table) and str(get_table_map_name(table)).lower() == map_query)
+            or (map_query == 'global' and table.get('is_shared_global'))
+        ]
     if args.search:
         query = args.search.lower()
         tables = [
@@ -406,10 +725,74 @@ def command_list(args) -> dict:
     return {'tables': tables, 'session': session.get_summary()}
 
 
+def command_maps(args) -> dict:
+    """List detected maps, shared tables, and bucket counts."""
+    session = load_required_session(args.session)
+    tables = session.list_tables()
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for table in tables:
+        map_name = get_table_map_name(table)
+        if map_name:
+            grouped[map_name].append(table)
+    result = []
+    for map_name in sorted(grouped.keys()):
+        bucket_counts = Counter(table.get('workflow_bucket', 'Other') for table in grouped[map_name])
+        families = {table.get('family_key') or table.get('family_title') or table['title'] for table in grouped[map_name]}
+        result.append({
+            'map': map_name,
+            'table_count': len(grouped[map_name]),
+            'family_count': len(families),
+            'buckets': [
+                {'bucket': bucket, 'table_count': count}
+                for bucket, count in sorted(bucket_counts.items(), key=lambda item: (-item[1], item[0]))
+            ],
+        })
+    shared_count = sum(1 for table in tables if table.get('is_shared_global'))
+    return {'maps': result, 'shared_table_count': shared_count, 'session': session.get_summary()}
+
+
+def command_families(args) -> dict:
+    """List family groups with map variants and member table ids."""
+    session = load_required_session(args.session)
+    tables = session.list_tables()
+    if args.map_name:
+        map_query = args.map_name.lower()
+        tables = [
+            table for table in tables
+            if (get_table_map_name(table) and str(get_table_map_name(table)).lower() == map_query)
+            or (map_query == 'global' and table.get('is_shared_global'))
+        ]
+    if args.search:
+        query = args.search.lower()
+        tables = [
+            table for table in tables
+            if query in table.get('family_title', '').lower() or query in table['title'].lower()
+        ]
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for table in tables:
+        key = table.get('family_key') or table.get('family_title') or table['title']
+        grouped[key].append(table)
+    families = []
+    for family_key, members in grouped.items():
+        members = sorted(members, key=lambda item: (get_table_map_name(item) or '', item['title']))
+        maps = sorted({get_table_map_name(item) for item in members if get_table_map_name(item)})
+        families.append({
+            'family_key': family_key,
+            'family_title': members[0].get('family_title') or members[0]['title'],
+            'maps': maps,
+            'table_count': len(members),
+            'table_ids': [item['table_id'] for item in members],
+            'bucket': members[0].get('workflow_bucket'),
+        })
+    families.sort(key=lambda item: item['family_title'])
+    return {'families': families[:max(args.limit, 0)], 'session': session.get_summary()}
+
+
 def command_show(args) -> dict:
     session = load_required_session(args.session)
-    table = session.get_table(args.table_id)
-    return {'table': table, 'formatted': format_table(table), 'session': session.get_summary()}
+    resolved = resolve_target_table(session, build_selector_dict(args))
+    table = session.get_table(resolved['table_id'])
+    return {'table': table, 'formatted': format_table(table), 'resolved_target': build_resolved_target_payload(resolved), 'session': session.get_summary()}
 
 
 def command_diff(args) -> dict:
@@ -420,18 +803,20 @@ def command_diff(args) -> dict:
 def command_apply(args) -> dict:
     with session_file_lock(args.session):
         session = load_required_session(args.session)
-        table = session.get_table(args.table_id)
+        resolved = resolve_target_table(session, build_selector_dict(args))
+        table = session.get_table(resolved['table_id'])
         selection = parse_selection(table, args.rows, args.cols)
         parameters = {}
         if args.value is not None:
             parameters['value'] = args.value
 
         if args.preview:
-            preview = session.preview_operation(args.table_id, args.operation, selection, parameters)
-            return {'preview': preview, 'session': session.get_summary()}
+            preview = session.preview_operation(resolved['table_id'], args.operation, selection, parameters)
+            return {'preview': preview, 'resolved_target': build_resolved_target_payload(resolved), 'session': session.get_summary()}
 
-        result = session.apply_operation(args.table_id, args.operation, selection, parameters)
+        result = session.apply_operation(resolved['table_id'], args.operation, selection, parameters)
         save_session_file(session, args.session)
+        result['resolved_target'] = build_resolved_target_payload(resolved)
         return result
 
 
@@ -439,7 +824,8 @@ def command_axis(args) -> dict:
     values = parse_axis_values(args.values)
     with session_file_lock(args.session):
         session = load_required_session(args.session)
-        table = session.get_table(args.table_id)
+        resolved = resolve_target_table(session, build_selector_dict(args))
+        table = session.get_table(resolved['table_id'])
         axis_name = str(args.axis or '').strip().lower()
         current_values = table['x_labels'] if axis_name == 'x' else table['y_labels'] if axis_name == 'y' else None
         if current_values is None:
@@ -465,22 +851,24 @@ def command_axis(args) -> dict:
 
         if args.preview:
             return {
-                'table_id': args.table_id,
+                'table_id': resolved['table_id'],
                 'axis': axis_name,
                 'changes': changes[:160],
                 'changes_truncated': len(changes) > 160,
                 'summary': summary,
+                'resolved_target': build_resolved_target_payload(resolved),
                 'session': session.get_summary(),
             }
 
-        result = session.apply_axis_edit(args.table_id, axis_name, values)
+        result = session.apply_axis_edit(resolved['table_id'], axis_name, values)
         save_session_file(session, args.session)
         return {
-            'table_id': args.table_id,
+            'table_id': resolved['table_id'],
             'axis': axis_name,
             'changes': result.get('changes', []),
             'changes_truncated': result.get('changes_truncated', False),
             'summary': result['pending_edits'][-1]['summary'] if result.get('pending_edits') else summary,
+            'resolved_target': build_resolved_target_payload(resolved),
             'session': result['session'],
         }
 
@@ -505,6 +893,48 @@ def command_export(args) -> dict:
     with session_file_lock(args.session):
         session = load_required_session(args.session)
         return session.export_bin_and_log(args.output_bin)
+
+
+def command_batch(args) -> dict:
+    """Execute a sequence of chained edit steps from a JSON manifest."""
+    manifest = json.loads(Path(args.manifest).read_text())
+    steps = manifest.get('steps')
+    if not isinstance(steps, list) or not steps:
+        raise ValueError('Batch manifest requires a non-empty steps array')
+
+    with session_file_lock(args.session):
+        session = load_required_session(args.session)
+        results = []
+        export_result = None
+        for index, step in enumerate(steps, start=1):
+            action = str(step.get('action', '')).strip().lower()
+            try:
+                if action == 'apply':
+                    resolved = resolve_target_table(session, step.get('target') or {})
+                    table = session.get_table(resolved['table_id'])
+                    selection = parse_selection(table, step.get('rows'), step.get('cols'))
+                    params = {}
+                    if 'value' in step:
+                      params['value'] = step.get('value')
+                    payload = session.apply_operation(resolved['table_id'], step.get('operation'), selection, params)
+                    results.append({'index': index, 'action': action, 'status': 'ok', 'message': f"{resolved['title']} {step.get('operation')}", 'resolved_target': build_resolved_target_payload(resolved), 'summary': payload['preview']['summary']})
+                elif action == 'axis':
+                    resolved = resolve_target_table(session, step.get('target') or {})
+                    payload = session.apply_axis_edit(resolved['table_id'], step.get('axis'), step.get('values') or [])
+                    results.append({'index': index, 'action': action, 'status': 'ok', 'message': f"{resolved['title']} axis-{step.get('axis')}", 'resolved_target': build_resolved_target_payload(resolved), 'summary': payload['pending_edits'][-1]['summary'] if payload.get('pending_edits') else {}})
+                elif action == 'export':
+                    export_path = step.get('output_bin')
+                    if not export_path:
+                        raise ValueError('export step requires output_bin')
+                    export_result = session.export_bin_and_log(export_path)
+                    results.append({'index': index, 'action': action, 'status': 'ok', 'message': export_path})
+                else:
+                    raise ValueError(f'Unsupported batch action: {action}')
+            except Exception as exc:  # noqa: BLE001
+                results.append({'index': index, 'action': action or 'unknown', 'status': 'error', 'message': str(exc)})
+                raise
+        save_session_file(session, args.session)
+    return {'steps': results, 'session': session.get_summary(), 'export': export_result}
 
 
 def summarize_table_diff(table: dict) -> dict:
@@ -562,13 +992,19 @@ def main() -> int:
 
     try:
         if args.command == 'commands':
-            payload = {'commands': ['parse', 'compare', 'list', 'show', 'diff', 'apply', 'undo', 'reset', 'export']}
+            payload = {'commands': ['describe', 'parse', 'compare', 'list', 'maps', 'families', 'show', 'diff', 'apply', 'axis', 'undo', 'reset', 'export', 'batch']}
+        elif args.command == 'describe':
+            payload = command_describe(args)
         elif args.command == 'parse':
             payload = command_parse(args)
         elif args.command == 'compare':
             payload = command_compare(args)
         elif args.command == 'list':
             payload = command_list(args)
+        elif args.command == 'maps':
+            payload = command_maps(args)
+        elif args.command == 'families':
+            payload = command_families(args)
         elif args.command == 'show':
             payload = command_show(args)
         elif args.command == 'diff':
@@ -583,6 +1019,8 @@ def main() -> int:
             payload = command_reset(args)
         elif args.command == 'export':
             payload = command_export(args)
+        elif args.command == 'batch':
+            payload = command_batch(args)
         else:
             parser.error(f'Unhandled command: {args.command}')
             return 2
