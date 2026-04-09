@@ -5,6 +5,10 @@ XDF is XML-based and describes the layout of tables/scalars in a binary ECU file
 import xml.etree.ElementTree as ET
 
 
+class XdfFormatError(ValueError):
+    """Raised when an XDF file is not a supported XML/text export."""
+
+
 def _parse_int(value, default=0):
     """Parse an integer that may be hex (0x...) or decimal."""
     if value is None:
@@ -152,12 +156,24 @@ def parse_xdf(xdf_bytes):
     categories_map – {int_index: str_name} from <CATEGORY> elements in the header
     """
     if isinstance(xdf_bytes, bytes):
-        xdf_bytes = xdf_bytes.lstrip(b'\xef\xbb\xbf')
-        text = xdf_bytes.decode('utf-8', errors='replace')
+        raw = xdf_bytes.lstrip(b'\xef\xbb\xbf')
+        if not _looks_like_text_xdf(raw):
+            raise XdfFormatError(
+                'This XDF is not a supported XML/text XDF export. '
+                'It appears to be a binary/proprietary XDF file. '
+                'Re-save or export it from TunerPro as an XML/text XDF and try again.'
+            )
+        text = raw.decode('utf-8', errors='replace')
     else:
         text = xdf_bytes
 
-    root = ET.fromstring(text)
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise XdfFormatError(
+            'The XDF could not be parsed as XML/text. '
+            'If this is a TunerPro definition, re-save or export it as an XML/text XDF first.'
+        ) from exc
 
     # ── Header ────────────────────────────────────────────────────────────
     base_offset      = 0
@@ -206,3 +222,14 @@ def parse_xdf(xdf_bytes):
                 definitions.append(c)
 
     return definitions, categories_map
+
+
+def _looks_like_text_xdf(data: bytes) -> bool:
+    sample = data[:512].lstrip()
+    if not sample:
+        return False
+    if sample.startswith(b'<?xml') or sample.startswith(b'<'):
+        return True
+    if b'<XDF' in sample or b'<XDFFORMAT' in sample or b'<XDFHEADER' in sample:
+        return True
+    return False

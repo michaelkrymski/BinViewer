@@ -166,6 +166,27 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="folder-quick-add-modal" style="display:none">
+  <div class="modal modal--wide">
+    <div class="modal-header">
+      <span id="folder-quick-add-title">Quick Add to Folder</span>
+      <button class="modal-close" id="folder-quick-add-close">x</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Search tables and families, then use checkboxes to add or remove them from this folder in one pass.</p>
+      <div class="quick-add-toolbar">
+        <input type="text" id="folder-quick-add-search" placeholder="Search tables, families, buckets, maps..." />
+        <button class="btn btn-ghost btn-sm" id="folder-quick-add-clear">Clear</button>
+      </div>
+      <div class="quick-add-list" id="folder-quick-add-list"></div>
+      <div class="metadata-form__actions">
+        <button class="btn btn-ghost btn-sm" id="folder-quick-add-cancel">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="folder-quick-add-save">Save Assignments</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="debug-modal" style="display:none">
   <div class="modal">
     <div class="modal-header">

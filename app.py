@@ -9,7 +9,7 @@ from bin_reader import extract_table
 from editor_core import EditSession, SessionRegistry
 from preferences_store import load_preferences, save_preferences
 from table_ranker import build_table_metadata
-from xdf_parser import parse_xdf
+from xdf_parser import XdfFormatError, parse_xdf
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
@@ -65,6 +65,8 @@ def api_parse():
         )
         return jsonify(serialize_session(session))
 
+    except XdfFormatError as exc:
+        return jsonify({'error': str(exc)}), 400
     except Exception as exc:
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 500
 
@@ -140,6 +142,8 @@ def api_debug():
 
         return jsonify({'count': len(out), 'tables': out})
 
+    except XdfFormatError as exc:
+        return jsonify({'error': str(exc)}), 400
     except Exception as exc:
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 500
 

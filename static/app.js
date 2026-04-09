@@ -32,6 +32,9 @@ const state = {
   axisDrafts: {},
   preferences: { favorites: { tables: [], families: [] }, folders: [], assignments: {} },
   editingFolderId: null,
+  quickAddFolderId: null,
+  quickAddAssignments: new Set(),
+  quickAddQuery: '',
   metadataOverrides: loadMetadataOverrides(),
   editingMetadataTableId: null,
   openState: { cards: new Set(), groups: new Set(), families: new Set() },
@@ -110,6 +113,14 @@ const folderModal = $('folder-modal');
 const folderNameInput = $('folder-name');
 const btnFolderSave = $('folder-save');
 const btnFolderDelete = $('folder-delete');
+const quickAddModal = $('folder-quick-add-modal');
+const quickAddTitle = $('folder-quick-add-title');
+const quickAddSearch = $('folder-quick-add-search');
+const quickAddList = $('folder-quick-add-list');
+const btnQuickAddClose = $('folder-quick-add-close');
+const btnQuickAddCancel = $('folder-quick-add-cancel');
+const btnQuickAddClear = $('folder-quick-add-clear');
+const btnQuickAddSave = $('folder-quick-add-save');
 
 let debugTables = [];
 let dragSelection = null;
@@ -217,6 +228,14 @@ function wireModals() {
   $('ai-context-close').addEventListener('click', () => { aiContextModal.style.display = 'none'; });
   $('metadata-close').addEventListener('click', closeMetadataModal);
   $('folder-close').addEventListener('click', closeFolderModal);
+  btnQuickAddClose.addEventListener('click', closeQuickAddModal);
+  btnQuickAddCancel.addEventListener('click', closeQuickAddModal);
+  btnQuickAddClear.addEventListener('click', () => {
+    quickAddSearch.value = '';
+    state.quickAddQuery = '';
+    renderQuickAddList();
+  });
+  btnQuickAddSave.addEventListener('click', saveQuickAddAssignments);
 
   debugModal.addEventListener('click', event => {
     if (event.target === debugModal) {
@@ -240,11 +259,20 @@ function wireModals() {
       closeFolderModal();
     }
   });
+  quickAddModal.addEventListener('click', event => {
+    if (event.target === quickAddModal) {
+      closeQuickAddModal();
+    }
+  });
 
   btnMetadataSave.addEventListener('click', saveMetadataOverride);
   btnMetadataReset.addEventListener('click', clearMetadataOverride);
   btnFolderSave.addEventListener('click', saveFolder);
   btnFolderDelete.addEventListener('click', deleteFolder);
+  quickAddSearch.addEventListener('input', () => {
+    state.quickAddQuery = quickAddSearch.value.trim().toLowerCase();
+    renderQuickAddList();
+  });
 
   debugSearch.addEventListener('input', () => renderDebugOutput(debugTables));
 }
@@ -1988,17 +2016,21 @@ function renderFolderList() {
   state.preferences.folders.forEach(folder => {
     const row = document.createElement('div');
     row.className = 'folder-row';
-    const assigned = selectedKey && Array.isArray(assignments[folder.id]) && assignments[folder.id].includes(selectedKey);
+    const selectedFamilyKey = selected ? getFamilyPreferenceKey(selected) : null;
+    const assignedKeys = Array.isArray(assignments[folder.id]) ? assignments[folder.id] : [];
+    const assigned = selectedKey && (assignedKeys.includes(selectedKey) || (selectedFamilyKey && assignedKeys.includes(selectedFamilyKey)));
     row.innerHTML = `
       <div class="folder-row__info">
         <button class="folder-row__name" type="button">${escapeHtml(folder.name)}</button>
-        <span class="folder-row__count">${Array.isArray(assignments[folder.id]) ? assignments[folder.id].length : 0}</span>
+        <span class="folder-row__count">${assignedKeys.length}</span>
       </div>
       <div class="folder-row__actions">
         <button class="editor-mini-btn" type="button" data-folder-assign="${escapeHtml(folder.id)}" ${selectedKey ? '' : 'disabled'}>${assigned ? 'Remove' : 'Add'}</button>
+        <button class="editor-mini-btn" type="button" data-folder-quick="${escapeHtml(folder.id)}">Quick Add</button>
       </div>`;
     row.querySelector('.folder-row__name').addEventListener('click', () => openFolderModal(folder.id));
     row.querySelector('[data-folder-assign]').addEventListener('click', () => toggleFolderAssignment(folder.id));
+    row.querySelector('[data-folder-quick]').addEventListener('click', () => openQuickAddModal(folder.id));
     folderList.appendChild(row);
   });
 }
@@ -2009,12 +2041,15 @@ function toggleFolderAssignment(folderId) {
     showToast('Select a table first.');
     return;
   }
-  const key = getTablePreferenceKey(selected);
+  const tableKey = getTablePreferenceKey(selected);
+  const familyKey = getFamilyPreferenceKey(selected);
   const current = new Set(state.preferences.assignments[folderId] || []);
-  if (current.has(key)) {
-    current.delete(key);
+  if (current.has(tableKey)) {
+    current.delete(tableKey);
+  } else if (current.has(familyKey)) {
+    current.delete(familyKey);
   } else {
-    current.add(key);
+    current.add(tableKey);
   }
   state.preferences.assignments[folderId] = [...current];
   savePreferences();
@@ -2064,9 +2099,118 @@ function deleteFolder() {
   savePreferences();
 }
 
+function openQuickAddModal(folderId) {
+  const folder = (state.preferences.folders || []).find(item => item.id === folderId);
+  if (!folder) {
+    showToast('Could not find that folder.');
+    return;
+  }
+  state.quickAddFolderId = folderId;
+  state.quickAddAssignments = new Set(state.preferences.assignments[folderId] || []);
+  state.quickAddQuery = '';
+  quickAddSearch.value = '';
+  quickAddTitle.textContent = `Quick Add to ${folder.name}`;
+  quickAddModal.style.display = 'flex';
+  renderQuickAddList();
+  quickAddSearch.focus();
+}
+
+function closeQuickAddModal() {
+  quickAddModal.style.display = 'none';
+  state.quickAddFolderId = null;
+  state.quickAddAssignments = new Set();
+  state.quickAddQuery = '';
+  if (quickAddSearch) {
+    quickAddSearch.value = '';
+  }
+}
+
+function renderQuickAddList() {
+  if (!quickAddList) {
+    return;
+  }
+  const items = getQuickAddItems();
+  const query = state.quickAddQuery;
+  const visible = query
+    ? items.filter(item => `${item.label} ${item.subtitle || ''} ${item.kind}`.toLowerCase().includes(query))
+    : items;
+
+  if (!visible.length) {
+    quickAddList.innerHTML = '<div class="folder-empty">No tables or families match that search.</div>';
+    return;
+  }
+
+  quickAddList.innerHTML = visible.map(item => `
+    <label class="quick-add-item">
+      <input type="checkbox" data-quick-key="${escapeHtml(item.key)}" ${state.quickAddAssignments.has(item.key) ? 'checked' : ''} />
+      <div class="quick-add-item__copy">
+        <div class="quick-add-item__title">${escapeHtml(item.label)}</div>
+        <div class="quick-add-item__meta">${escapeHtml(item.kind)}${item.subtitle ? ` · ${escapeHtml(item.subtitle)}` : ''}</div>
+      </div>
+    </label>
+  `).join('');
+
+  quickAddList.querySelectorAll('[data-quick-key]').forEach(input => {
+    input.addEventListener('change', event => {
+      const key = event.target.dataset.quickKey;
+      if (event.target.checked) {
+        state.quickAddAssignments.add(key);
+      } else {
+        state.quickAddAssignments.delete(key);
+      }
+    });
+  });
+}
+
+function getQuickAddItems() {
+  const familyMap = new Map();
+  const tableItems = [];
+  state.tables.forEach(table => {
+    const tableKey = getTablePreferenceKey(table);
+    tableItems.push({
+      key: tableKey,
+      kind: 'Table',
+      label: getDisplayTitle(table),
+      subtitle: [table.workflow_bucket || 'Other', getTableMapVariant(table) || '', table.units || ''].filter(Boolean).join(' · '),
+    });
+
+    const familyKey = getFamilyPreferenceKey(table);
+    if (!familyMap.has(familyKey)) {
+      familyMap.set(familyKey, {
+        key: familyKey,
+        kind: 'Family',
+        label: table.family_title || getDisplayTitle(table),
+        subtitle: table.workflow_bucket || 'Other',
+      });
+    }
+  });
+
+  const familyItems = Array.from(familyMap.values());
+  return [...familyItems, ...tableItems].sort((a, b) => {
+    if (a.kind !== b.kind) {
+      return a.kind.localeCompare(b.kind);
+    }
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function saveQuickAddAssignments() {
+  if (!state.quickAddFolderId) {
+    closeQuickAddModal();
+    return;
+  }
+  state.preferences.assignments[state.quickAddFolderId] = Array.from(state.quickAddAssignments);
+  closeQuickAddModal();
+  savePreferences();
+}
+
 function getAssignedFoldersMarkup(table) {
   const key = getTablePreferenceKey(table);
-  const assigned = (state.preferences.folders || []).filter(folder => (state.preferences.assignments[folder.id] || []).includes(key));
+  const familyKey = getFamilyPreferenceKey(table);
+  const assigned = (state.preferences.folders || []).filter(folder => {
+    const keys = state.preferences.assignments[folder.id] || [];
+    return keys.includes(key) || keys.includes(familyKey);
+  });
   if (!assigned.length) {
     return '<div class="desc-short">Not saved in a custom folder yet.</div>';
   }
