@@ -44,6 +44,7 @@
 - Improved map switching so changing Map 1/2/3/4 tries to stay on the sibling table in the same family instead of dropping you back into the broad hierarchy position.
 - Fixed AI import diff rendering to compare the full current/import grids and axes instead of relying on the truncated change list for highlighting.
 - Fixed AI import with axes so applying the import clears stale cached axis drafts in the UI and shows the refreshed breakpoint values immediately.
+- Added a `Mirror to sibling maps` toggle in the inline editor so normal table edits, axis edits, and AI imports only fan out across sibling map variants when explicitly enabled.
 
 ## In Progress
 - WIP: Polish web editing interactions for real-world tune entry, including persistent last-used operation, better single-cell editing, ctrl/shift selection behavior, stronger selection outlines, preview-in-grid rendering, and family-local map switching.
@@ -98,3 +99,4 @@
 - 2026-04-09: Compare-mode direct cell edit smoke test passed by calling `/api/session/<id>/apply` against a compare-backed session and then exporting the edited BIN successfully.
 - 2026-04-09: Draft snapshot/restore smoke test passed through Flask test-client: `/api/session/<id>/snapshot` returned a full payload and `/api/session/restore` recreated a live session with tables intact.
 - 2026-04-09: AI import with `values_and_axes` smoke test passed through Flask test-client, and the refreshed table payload returned updated X and Y axis labels immediately after apply.
+- 2026-04-10: `node --check static/app.js` passed after adding the explicit mirror-toggle workflow for edits/imports/axis changes; the fan-out path is wired through the shared apply handlers and is ready for live UI validation against real multi-map families.

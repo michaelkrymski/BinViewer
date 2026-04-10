@@ -21,14 +21,15 @@ function loadEditorPrefs() {
     const raw = window.localStorage.getItem(EDITOR_PREFS_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
     if (!parsed || typeof parsed !== 'object') {
-      return { operation: 'add_constant', value: 1 };
+      return { operation: 'add_constant', value: 1, mirrorAcrossMaps: false };
     }
     return {
       operation: parsed.operation || 'add_constant',
       value: Number.isFinite(Number(parsed.value)) ? parsed.value : 1,
+      mirrorAcrossMaps: Boolean(parsed.mirrorAcrossMaps),
     };
   } catch (error) {
-    return { operation: 'add_constant', value: 1 };
+    return { operation: 'add_constant', value: 1, mirrorAcrossMaps: false };
   }
 }
 
@@ -651,6 +652,21 @@ function findSiblingTableForMap(table, mapLabel, tables = state.tables) {
     return familyMatch;
   }
   return null;
+}
+
+function getMirrorSiblingTables(tableId, tables = state.tables) {
+  const source = (tables || []).find(item => item.table_id === tableId);
+  if (!source || isGlobalTable(source)) {
+    return [];
+  }
+  const familyKey = source.family_key || source.family_title || source.title;
+  const variantLabel = String(source.variant_label || '');
+  return (tables || []).filter(item => {
+    if (item.table_id === tableId) return false;
+    if (isGlobalTable(item)) return false;
+    if ((item.family_key || item.family_title || item.title) !== familyKey) return false;
+    return String(item.variant_label || '') === variantLabel;
+  });
 }
 
 function getWorkflowCategories(tables) {
@@ -1441,6 +1457,12 @@ function buildEditorPanel(table) {
         <button class="btn btn-ghost btn-sm editor-preview-btn" type="button">Preview</button>
         <button class="btn btn-primary btn-sm editor-apply-btn" type="button">Apply to Draft</button>
       </div>
+      <div class="editor-row editor-row--options">
+        <label class="editor-toggle">
+          <input class="editor-mirror-toggle" type="checkbox" ${formState.mirrorAcrossMaps ? 'checked' : ''} />
+          <span>Mirror to sibling maps</span>
+        </label>
+      </div>
       <div class="editor-preview">${previewSummary}</div>
     </div>`;
 }
@@ -1827,16 +1849,19 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
     const operationSelect = panel.querySelector('.editor-operation');
     const valueWrap = panel.querySelector('.editor-value-wrap');
     const valueInput = panel.querySelector('.editor-value');
+    const mirrorToggle = panel.querySelector('.editor-mirror-toggle');
 
     const syncFormState = () => {
       const value = valueInput ? valueInput.value : '';
       state.editorForms[tableId] = {
         operation: operationSelect.value,
         value,
+        mirrorAcrossMaps: Boolean(mirrorToggle?.checked),
       };
       state.lastEditorPreset = {
         operation: operationSelect.value,
         value,
+        mirrorAcrossMaps: Boolean(mirrorToggle?.checked),
       };
       saveEditorPrefs();
       valueWrap.style.display = operationSelect.value.startsWith('interpolate') ? 'none' : '';
@@ -1846,6 +1871,9 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
     operationSelect.addEventListener('change', syncFormState);
     if (valueInput) {
       valueInput.addEventListener('input', syncFormState);
+    }
+    if (mirrorToggle) {
+      mirrorToggle.addEventListener('change', syncFormState);
     }
 
     panel.querySelector('[data-editor-action="select-all"]').addEventListener('click', event => {
@@ -2004,8 +2032,9 @@ function beginInlineCellEdit(cell, table) {
       }
       state.selections[table.table_id] = normalizeSelection({ row_start: row, row_end: row, col_start: col, col_end: col });
       state.selectionAnchors[table.table_id] = { row, col };
-      state.editorForms[table.table_id] = { operation: 'set_cells', value };
-      state.lastEditorPreset = { operation: 'set_cells', value };
+      const mirrorAcrossMaps = Boolean(state.editorForms[table.table_id]?.mirrorAcrossMaps || state.lastEditorPreset?.mirrorAcrossMaps);
+      state.editorForms[table.table_id] = { operation: 'set_cells', value, mirrorAcrossMaps };
+      state.lastEditorPreset = { operation: 'set_cells', value, mirrorAcrossMaps };
       saveEditorPrefs();
       await runEditorAction(table.table_id, false);
     } else if (event.key === 'Escape') {
@@ -2032,7 +2061,7 @@ async function runEditorAction(tableId, previewOnly) {
     return;
   }
 
-  const formState = state.editorForms[tableId] || state.lastEditorPreset || { operation: 'add_constant', value: 1 };
+  const formState = state.editorForms[tableId] || state.lastEditorPreset || { operation: 'add_constant', value: 1, mirrorAcrossMaps: false };
   const payload = {
     table_id: tableId,
     operation: formState.operation,
@@ -2071,6 +2100,29 @@ async function runEditorAction(tableId, previewOnly) {
   state.session = data.session || state.session;
   state.previews[tableId] = data.preview || null;
   state.tables = state.tables.map(table => (table.table_id === tableId ? data.table : table));
+  if (formState.mirrorAcrossMaps) {
+    const siblings = getMirrorSiblingTables(tableId);
+    for (const sibling of siblings) {
+      const siblingResponse = await fetch(`/api/session/${state.session.session_id}/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          table_id: sibling.table_id,
+          operation: payload.operation,
+          selection: payload.selection,
+          parameters: payload.parameters,
+        }),
+      });
+      const siblingData = await siblingResponse.json();
+      if (!siblingResponse.ok) {
+        showToast(siblingData.error || `Mirror failed for ${sibling.title}.`);
+        continue;
+      }
+      state.session = siblingData.session || state.session;
+      state.tables = state.tables.map(table => (table.table_id === sibling.table_id ? siblingData.table : table));
+      state.previews[sibling.table_id] = siblingData.preview || null;
+    }
+  }
   updateDraftToolbar();
   renderList();
   showToast('Draft updated.');
@@ -2103,6 +2155,28 @@ async function applyAxisDraft(tableId, axisName) {
     state.axisDrafts[tableId] = {};
   }
   state.axisDrafts[tableId][axisName] = [...(axisName === 'x' ? (data.table.x_labels || []) : (data.table.y_labels || []))];
+  const formState = state.editorForms[tableId] || state.lastEditorPreset || { mirrorAcrossMaps: false };
+  if (formState.mirrorAcrossMaps) {
+    const siblings = getMirrorSiblingTables(tableId);
+    for (const sibling of siblings) {
+      const siblingResponse = await fetch(`/api/session/${state.session.session_id}/axis`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_id: sibling.table_id, axis: axisName, values }),
+      });
+      const siblingData = await siblingResponse.json();
+      if (!siblingResponse.ok) {
+        showToast(siblingData.error || `Mirror failed for ${sibling.title}.`);
+        continue;
+      }
+      state.session = siblingData.session || state.session;
+      state.tables = state.tables.map(table => (table.table_id === sibling.table_id ? siblingData.table : table));
+      if (!state.axisDrafts[sibling.table_id]) {
+        state.axisDrafts[sibling.table_id] = {};
+      }
+      state.axisDrafts[sibling.table_id][axisName] = [...(axisName === 'x' ? (siblingData.table.x_labels || []) : (siblingData.table.y_labels || []))];
+    }
+  }
   updateDraftToolbar();
   renderList();
   showToast(`${String(axisName).toUpperCase()} axis updated.`);
@@ -2711,6 +2785,30 @@ async function applyImportedTable() {
   delete state.axisDrafts[state.importTableId];
   delete state.previews[state.importTableId];
   state.tables = state.tables.map(table => (table.table_id === state.importTableId ? data.table : table));
+  const formState = state.editorForms[state.importTableId] || state.lastEditorPreset || { mirrorAcrossMaps: false };
+  if (formState.mirrorAcrossMaps) {
+    const siblings = getMirrorSiblingTables(state.importTableId);
+    for (const sibling of siblings) {
+      const siblingResponse = await fetch(`/api/session/${state.session.session_id}/import-apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          table_id: sibling.table_id,
+          import_text: importText.value,
+          mode: importMode.value,
+        }),
+      });
+      const siblingData = await siblingResponse.json();
+      if (!siblingResponse.ok) {
+        showImportError(siblingData.error || `Mirror failed for ${sibling.title}.`);
+        continue;
+      }
+      state.session = siblingData.session || state.session;
+      delete state.axisDrafts[sibling.table_id];
+      delete state.previews[sibling.table_id];
+      state.tables = state.tables.map(table => (table.table_id === sibling.table_id ? siblingData.table : table));
+    }
+  }
   updateDraftToolbar();
   renderList();
   closeImportModal();

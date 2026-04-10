@@ -1089,6 +1089,10 @@ table.data-table td.diff-changed .v2 { color: var(--green); }
   margin-bottom: 0;
 }
 
+.editor-row--options {
+  margin-top: -0.1rem;
+}
+
 .selection-chip {
   display: inline-flex;
   align-items: center;
@@ -1131,6 +1135,19 @@ table.data-table td.diff-changed .v2 { color: var(--green); }
   color: var(--text);
   font-size: 0.8rem;
   padding: 0.35rem 0.55rem;
+}
+
+.editor-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  user-select: none;
+}
+
+.editor-toggle input {
+  accent-color: var(--accent);
 }
 
 .editor-preview {
