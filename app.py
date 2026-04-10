@@ -385,6 +385,26 @@ def api_session_export(session_id):
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
 
 
+@app.route('/api/session/<session_id>/export-bin', methods=['POST'])
+def api_session_export_bin(session_id):
+    try:
+        session = SESSIONS.get(session_id)
+        payload = request.get_json(silent=True) or {}
+        result = session.export_bin_only(stem=payload.get('stem'))
+        response = send_file(
+            BytesIO(result['bin_bytes']),
+            mimetype='application/octet-stream',
+            as_attachment=True,
+            download_name=result['filename'],
+        )
+        response.headers['X-Export-Log-Path'] = result['log_path']
+        return response
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
 def _table_has_meaningful_diff(table: dict) -> bool:
     grid = table.get('grid') or []
     grid2 = table.get('grid2') or []

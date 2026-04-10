@@ -2410,6 +2410,14 @@ header {
   box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.35);
 }
 
+.compare-editable-cell {
+  cursor: cell;
+}
+
+.compare-editable-cell:hover {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32);
+}
+
 .import-scalar {
   margin: 0.8rem;
   padding: 1rem 1.1rem;

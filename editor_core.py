@@ -25,6 +25,7 @@ from bin_reader import (
 from table_ranker import build_table_metadata, load_description_overlay, load_tuning_history
 from xdf_parser import parse_xdf
 
+DEFAULT_EXPORT_LOG_DIR = Path.home() / 'Documents' / 'N55Maps' / 'viewer_export_logs'
 
 SUPPORTED_OPERATIONS = [
     'set_cells',
@@ -544,6 +545,30 @@ class EditSession:
                 ).encode('utf-8'),
             )
         return (f'{base_stem}-edited.zip', buffer.getvalue())
+
+    def export_bin_only(self, *, stem: str | None = None, log_dir: str | Path | None = None) -> dict:
+        """Return raw BIN bytes and persist a central JSON change log for the export."""
+        base_stem = sanitize_stem(stem or Path(self.source_bin_name).stem or 'edited-bin')
+        bin_name = f'{base_stem}-edited.bin'
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        target_dir = Path(log_dir) if log_dir else DEFAULT_EXPORT_LOG_DIR
+        target_dir.mkdir(parents=True, exist_ok=True)
+        log_path = target_dir / f'{base_stem}-{timestamp}.changes.json'
+        log_payload = {
+            'session': self.get_summary(),
+            'pending_edits': self.pending_edits,
+            'source_bin_name': self.source_bin_name,
+            'reference_bin_name': self.reference_bin_name,
+            'exported_bin_name': bin_name,
+            'exported_at': datetime.now().isoformat(timespec='seconds'),
+        }
+        log_path.write_text(json.dumps(log_payload, indent=2), encoding='utf-8')
+        return {
+            'filename': bin_name,
+            'bin_bytes': bytes(self.working_bin),
+            'log_path': str(log_path),
+            'session': self.get_summary(),
+        }
 
     def export_bin_and_log(self, output_path: str | Path) -> dict:
         """Write the draft BIN and a companion JSON change log to disk."""

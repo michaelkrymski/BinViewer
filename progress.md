@@ -37,6 +37,9 @@
 - Added a recorded parity/regression document at `E85V2_PARITY_REGRESSION.md` covering the canonical TunerPro vs web vs CLI exact-match case.
 - Added AI table import preview/apply support so pasted AI-generated tables can be compared side-by-side against the current draft before applying.
 - Added compare-mode transfer controls so changed tables can copy compare-side values, or values plus axes, into the base draft and export directly from `/compare`.
+- Improved export flow so the web UI can export a raw BIN directly while writing a centralized JSON change log under `Documents\\N55Maps\\viewer_export_logs`.
+- Improved `Copy for AI` so highlighted selections export a tighter, more explanation-friendly region instead of always dumping the full table.
+- Added direct single-cell editing in compare mode by double-clicking the base-side grid after a compare session is loaded.
 
 ## In Progress
 - WIP: Polish web editing interactions for real-world tune entry, including persistent last-used operation, better single-cell editing, ctrl/shift selection behavior, stronger selection outlines, preview-in-grid rendering, and family-local map switching.
@@ -87,3 +90,5 @@
 - 2026-04-09: `tuner_cli.py batch` verified with a JSON manifest applying a selector-based edit step, then the session was reset cleanly afterward.
 - 2026-04-09: AI table import smoke tests passed through Flask test-client for both scalar and multi-cell tables using `/api/session/<id>/import-preview` and `/api/session/<id>/import-apply` against `000021571DAA01.xdf` + `Stock_TestCLI.bin`.
 - 2026-04-09: Compare-mode transfer smoke test passed through Flask test-client: `/api/compare` returned a live session id, `/api/session/<id>/transfer-reference` copied a changed editable table into the base draft, and `/api/session/<id>/export` returned a ZIP bundle successfully.
+- 2026-04-09: Raw BIN export smoke test passed through Flask test-client: `/api/session/<id>/export-bin` returned `application/octet-stream` and included an `X-Export-Log-Path` header for the centrally saved changelog.
+- 2026-04-09: Compare-mode direct cell edit smoke test passed by calling `/api/session/<id>/apply` against a compare-backed session and then exporting the edited BIN successfully.

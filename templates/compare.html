@@ -176,7 +176,7 @@
         const compareValue = (table.grid2?.[row] || [])[col];
         const activeValue = (grid[row] || [])[col];
         const changed = currentValue !== compareValue;
-        html += `<td class="table-cell${changed ? (useCompareSide ? ' is-preview' : ' is-selected-cell') : ''}">${formatValue(activeValue)}</td>`;
+        html += `<td class="table-cell${changed ? (useCompareSide ? ' is-preview' : ' is-selected-cell') : ''}${!useCompareSide && table.editable ? ' compare-editable-cell' : ''}" data-table-id="${table.table_id}" data-row="${row}" data-col="${col}" data-side="${useCompareSide ? 'compare' : 'base'}">${formatValue(activeValue)}</td>`;
       }
       html += '</tr>';
     }
@@ -216,6 +216,46 @@
     document.querySelectorAll('.compare-transfer-axes').forEach(button => {
       button.addEventListener('click', () => transferCompareTable(button.dataset.tableId, true));
     });
+    document.querySelectorAll('.compare-editable-cell').forEach(cell => {
+      cell.addEventListener('dblclick', () => editCompareCell(cell));
+    });
+  }
+
+  async function editCompareCell(cell) {
+    if (!compareState.sessionId || cell.dataset.side !== 'base') return;
+    const current = cell.textContent.trim();
+    const next = window.prompt('Set cell value', current);
+    if (next === null) return;
+    const value = Number(next);
+    if (!Number.isFinite(value)) {
+      alert('Enter a valid numeric value.');
+      return;
+    }
+    const row = Number(cell.dataset.row);
+    const col = Number(cell.dataset.col);
+    const response = await fetch(`/api/session/${compareState.sessionId}/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_id: cell.dataset.tableId,
+        operation: 'set_cells',
+        selection: { row_start: row, row_end: row, col_start: col, col_end: col },
+        parameters: { value },
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      alert(data.error || 'Cell edit failed');
+      return;
+    }
+    compareState.session = data.session;
+    compareState.tables = compareState.tables.map(table => table.table_id === cell.dataset.tableId ? { ...table, ...data.table } : table);
+    renderCompareSummary({
+      changed_table_count: compareState.tables.length,
+      raw_change_range_count: compareState.rawRanges.length,
+    });
+    renderCompareTables();
+    syncCompareActions();
   }
 
   async function transferCompareTable(tableId, includeAxes) {
@@ -242,7 +282,7 @@
 
   async function exportCompareDraft() {
     if (!compareState.sessionId) return;
-    const response = await fetch(`/api/session/${compareState.sessionId}/export`, {
+    const response = await fetch(`/api/session/${compareState.sessionId}/export-bin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stem: 'compare-transfer' }),
@@ -253,14 +293,20 @@
       return;
     }
     const blob = await response.blob();
+    const exportLogPath = response.headers.get('X-Export-Log-Path');
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'compare-transfer.zip';
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    link.download = match ? match[1] : 'compare-transfer.bin';
     document.body.appendChild(link);
     link.click();
     link.remove();
     window.URL.revokeObjectURL(url);
+    if (exportLogPath) {
+      window.setTimeout(() => window.alert(`BIN exported. Log saved to ${exportLogPath}`), 50);
+    }
   }
 
   async function undoCompareDraft() {

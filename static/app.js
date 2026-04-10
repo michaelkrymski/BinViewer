@@ -2107,7 +2107,7 @@ async function exportDraft() {
   if (!state.session?.session_id) {
     return;
   }
-  const response = await fetch(`/api/session/${state.session.session_id}/export`, {
+  const response = await fetch(`/api/session/${state.session.session_id}/export-bin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ stem: stripExtension(state.files.bin?.name || 'edited-bin') }),
@@ -2121,10 +2121,11 @@ async function exportDraft() {
 
   const blob = await response.blob();
   const disposition = response.headers.get('content-disposition') || '';
+  const exportLogPath = response.headers.get('X-Export-Log-Path');
   const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
-  const filename = match ? match[1] : 'edited-bin.zip';
+  const filename = match ? match[1] : 'edited-bin.bin';
   downloadBlob(blob, filename);
-  showToast('Export ready.');
+  showToast(exportLogPath ? `BIN exported. Log saved to ${exportLogPath}` : 'BIN exported.');
 }
 
 function stripExtension(filename) {
@@ -2694,6 +2695,73 @@ function copyForAI(table) {
     } else {
       lines.push(`Value: ${first}${unitsSuffix}`);
     }
+    return copyText(lines.join('\n'));
+  }
+
+  const selection = normalizeSelection(state.selections[table.table_id]);
+  if (selection) {
+    lines.push(`Selection: ${formatSelectionLabel(selection, table).replace(/^Selection:\s*/, '')}`);
+    const selectedCells = Array.isArray(selection.cells) && selection.cells.length
+      ? selection.cells
+      : (() => {
+          const cells = [];
+          for (let row = selection.row_start; row <= selection.row_end; row += 1) {
+            for (let col = selection.col_start; col <= selection.col_end; col += 1) {
+              cells.push({ row, col });
+            }
+          }
+          return cells;
+        })();
+    const rowIndexes = [...new Set(selectedCells.map(cell => Number(cell.row)))].sort((a, b) => a - b);
+    const colIndexes = [...new Set(selectedCells.map(cell => Number(cell.col)))].sort((a, b) => a - b);
+    const rectangular = selection.is_rectangular !== false
+      && selectedCells.length === rowIndexes.length * colIndexes.length;
+
+    if (!rectangular) {
+      lines.push('');
+      lines.push('Selected Cells:');
+      selectedCells
+        .slice()
+        .sort((a, b) => (a.row - b.row) || (a.col - b.col))
+        .forEach(cell => {
+          const value = formatNumber((table.grid[cell.row] || [])[cell.col] ?? 0);
+          const yLabel = table.y_labels?.[cell.row] !== undefined ? formatNumber(table.y_labels[cell.row]) : `R${cell.row + 1}`;
+          const xLabel = table.x_labels?.[cell.col] !== undefined ? formatNumber(table.x_labels[cell.col]) : `C${cell.col + 1}`;
+          lines.push(`- Y=${yLabel}, X=${xLabel}: ${value}`);
+        });
+      return copyText(lines.join('\n'));
+    }
+
+    const widths = new Array(colIndexes.length + 1).fill(3);
+    widths[0] = Math.max(3, ...rowIndexes.map(row => formatNumber(table.y_labels?.[row] ?? `R${row + 1}`).length));
+    colIndexes.forEach((col, idx) => {
+      let width = formatNumber(table.x_labels?.[col] ?? `C${col + 1}`).length;
+      rowIndexes.forEach(row => {
+        const cellText = formatNumber((table.grid[row] || [])[col] ?? 0);
+        width = Math.max(width, cellText.length);
+      });
+      widths[idx + 1] = width;
+    });
+
+    lines.push('');
+    if (colIndexes.length) {
+      lines.push(`X Axis: ${colIndexes.map(col => formatNumber(table.x_labels?.[col] ?? `C${col + 1}`)).join(', ')}`);
+    }
+    if (rowIndexes.length) {
+      lines.push(`Y Axis: ${rowIndexes.map(row => formatNumber(table.y_labels?.[row] ?? `R${row + 1}`)).join(', ')}`);
+    }
+    lines.push('');
+    const headers = [pad('', widths[0])];
+    colIndexes.forEach((col, idx) => headers.push(pad(formatNumber(table.x_labels?.[col] ?? `C${col + 1}`), widths[idx + 1])));
+    lines.push(headers.join(' | '));
+    lines.push(headers.map((_, index) => '-'.repeat(widths[index])).join('-+-'));
+    rowIndexes.forEach(row => {
+      const cells = [pad(formatNumber(table.y_labels?.[row] ?? `R${row + 1}`), widths[0])];
+      colIndexes.forEach((col, idx) => {
+        cells.push(pad(formatNumber((table.grid[row] || [])[col] ?? 0), widths[idx + 1]));
+      });
+      lines.push(cells.join(' | '));
+    });
     return copyText(lines.join('\n'));
   }
 
