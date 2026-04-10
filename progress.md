@@ -40,6 +40,10 @@
 - Improved export flow so the web UI can export a raw BIN directly while writing a centralized JSON change log under `Documents\\N55Maps\\viewer_export_logs`.
 - Improved `Copy for AI` so highlighted selections export a tighter, more explanation-friendly region instead of always dumping the full table.
 - Added direct single-cell editing in compare mode by double-clicking the base-side grid after a compare session is loaded.
+- Added manual draft save/restore for the web UI by snapshotting full backend session payloads and recreating them cleanly from the browser.
+- Improved map switching so changing Map 1/2/3/4 tries to stay on the sibling table in the same family instead of dropping you back into the broad hierarchy position.
+- Fixed AI import diff rendering to compare the full current/import grids and axes instead of relying on the truncated change list for highlighting.
+- Fixed AI import with axes so applying the import clears stale cached axis drafts in the UI and shows the refreshed breakpoint values immediately.
 
 ## In Progress
 - WIP: Polish web editing interactions for real-world tune entry, including persistent last-used operation, better single-cell editing, ctrl/shift selection behavior, stronger selection outlines, preview-in-grid rendering, and family-local map switching.
@@ -92,3 +96,5 @@
 - 2026-04-09: Compare-mode transfer smoke test passed through Flask test-client: `/api/compare` returned a live session id, `/api/session/<id>/transfer-reference` copied a changed editable table into the base draft, and `/api/session/<id>/export` returned a ZIP bundle successfully.
 - 2026-04-09: Raw BIN export smoke test passed through Flask test-client: `/api/session/<id>/export-bin` returned `application/octet-stream` and included an `X-Export-Log-Path` header for the centrally saved changelog.
 - 2026-04-09: Compare-mode direct cell edit smoke test passed by calling `/api/session/<id>/apply` against a compare-backed session and then exporting the edited BIN successfully.
+- 2026-04-09: Draft snapshot/restore smoke test passed through Flask test-client: `/api/session/<id>/snapshot` returned a full payload and `/api/session/restore` recreated a live session with tables intact.
+- 2026-04-09: AI import with `values_and_axes` smoke test passed through Flask test-client, and the refreshed table payload returned updated X and Y axis labels immediately after apply.

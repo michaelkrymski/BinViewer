@@ -14,6 +14,7 @@ const WORKFLOW_BUCKET_ORDER = [
 
 const METADATA_STORAGE_KEY = 'tunerpro-viewer.metadata-overrides.v1';
 const EDITOR_PREFS_STORAGE_KEY = 'tunerpro-viewer.editor-prefs.v1';
+const DRAFT_SESSION_STORAGE_KEY = 'tunerpro-viewer.saved-draft-session.v1';
 
 function loadEditorPrefs() {
   try {
@@ -122,6 +123,8 @@ const draftMeta = $('draft-meta');
 const btnUndoDraft = $('btn-undo-draft');
 const btnResetDraft = $('btn-reset-draft');
 const btnExportDraft = $('btn-export-draft');
+const btnSaveDraftSession = $('btn-save-draft-session');
+const btnRestoreDraftSession = $('btn-restore-draft-session');
 const toast = $('copy-toast');
 const headerMeta = $('header-meta');
 const debugModal = $('debug-modal');
@@ -255,6 +258,8 @@ function wireToolbar() {
   btnCopyAiContext.addEventListener('click', () => copyText(AI_CONTEXT_PROMPT));
   btnExportBinTop.addEventListener('click', exportDraft);
 
+  btnSaveDraftSession.addEventListener('click', saveDraftSession);
+  btnRestoreDraftSession.addEventListener('click', restoreDraftSession);
   btnUndoDraft.addEventListener('click', undoDraft);
   btnResetDraft.addEventListener('click', resetDraft);
   btnExportDraft.addEventListener('click', exportDraft);
@@ -603,12 +608,49 @@ function renderMapTabs(maps, tables) {
       <span>${escapeHtml(mapLabel)}</span>
       <span class="map-tab__meta">${mapTables.length} entries</span>`;
     button.addEventListener('click', () => {
-      state.selectedMap = mapLabel;
-      state.selectedCategory = null;
-      renderList();
+      switchToMap(mapLabel, tables);
     });
     mapTabs.appendChild(button);
   });
+}
+
+function switchToMap(mapLabel, tables = state.tables) {
+  const currentTable = state.tables.find(item => item.table_id === state.selectedTableId) || null;
+  state.selectedMap = mapLabel;
+  let target = null;
+  if (currentTable) {
+    target = findSiblingTableForMap(currentTable, mapLabel, tables);
+  }
+  if (target) {
+    state.selectedCategory = target.workflow_bucket || state.selectedCategory;
+    state.selectedTableId = target.table_id;
+  } else {
+    state.selectedCategory = null;
+  }
+  renderList();
+}
+
+function findSiblingTableForMap(table, mapLabel, tables = state.tables) {
+  const familyKey = table.family_key || table.family_title || table.title;
+  const variantLabel = table.variant_label || '';
+  const exactTitle = table.title;
+  const candidates = (tables || []).filter(item => tableBelongsToMap(item, mapLabel));
+  const exactTitleMatch = candidates.find(item => item.title === exactTitle);
+  if (exactTitleMatch) {
+    return exactTitleMatch;
+  }
+  const exactVariantMatch = candidates.find(item =>
+    (item.family_key || item.family_title || item.title) === familyKey
+      && String(item.variant_label || '') === String(variantLabel || ''),
+  );
+  if (exactVariantMatch) {
+    return exactVariantMatch;
+  }
+  const familyMatch = candidates.find(item => (item.family_key || item.family_title || item.title) === familyKey);
+  if (familyMatch) {
+    return familyMatch;
+  }
+  return null;
 }
 
 function getWorkflowCategories(tables) {
@@ -844,6 +886,7 @@ function updateDraftToolbar() {
   if (!session) {
     draftBadge.textContent = 'Draft Unloaded';
     draftMeta.textContent = '0 pending edits · 0 dirty tables';
+    btnSaveDraftSession.disabled = true;
     btnUndoDraft.disabled = true;
     btnResetDraft.disabled = true;
     btnExportDraft.disabled = true;
@@ -854,6 +897,7 @@ function updateDraftToolbar() {
   draftBadge.textContent = exportReady ? 'Draft Dirty' : 'Draft Clean';
   draftBadge.classList.toggle('is-dirty', exportReady);
   draftMeta.textContent = `${pending} pending edits · ${dirty} dirty tables`;
+  btnSaveDraftSession.disabled = false;
   btnUndoDraft.disabled = pending === 0;
   btnResetDraft.disabled = pending === 0;
   btnExportDraft.disabled = !exportReady;
@@ -2143,6 +2187,71 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+async function saveDraftSession() {
+  if (!state.session?.session_id) {
+    showToast('No active draft to save.');
+    return;
+  }
+  const response = await fetch(`/api/session/${state.session.session_id}/snapshot`);
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Failed to save draft session.');
+    return;
+  }
+  const wrapper = {
+    saved_at: new Date().toISOString(),
+    payload: data.payload,
+    file_names: {
+      xdf: state.files.xdf?.name || state.session?.source_xdf_name || '',
+      bin: state.files.bin?.name || state.session?.source_bin_name || '',
+    },
+  };
+  window.localStorage.setItem(DRAFT_SESSION_STORAGE_KEY, JSON.stringify(wrapper));
+  showToast('Draft session saved.');
+}
+
+async function restoreDraftSession() {
+  const raw = window.localStorage.getItem(DRAFT_SESSION_STORAGE_KEY);
+  if (!raw) {
+    showToast('No saved draft session found.');
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    showToast('Saved draft is corrupted.');
+    return;
+  }
+  const response = await fetch('/api/session/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payload: parsed.payload }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Failed to restore draft.');
+    return;
+  }
+  state.tables = data.tables || [];
+  state.categories = data.categories || {};
+  state.session = data.session || null;
+  state.preferences = data.preferences || state.preferences;
+  state.files = {
+    xdf: state.files.xdf,
+    bin: state.files.bin,
+  };
+  const fileNames = parsed.file_names || {};
+  $('status-xdf').textContent = fileNames.xdf || state.session?.source_xdf_name || 'Restored draft XDF';
+  $('status-bin').textContent = fileNames.bin || state.session?.source_bin_name || 'Restored draft BIN';
+  state.selectedTableId = state.selectedTableId && state.tables.some(table => table.table_id === state.selectedTableId)
+    ? state.selectedTableId
+    : state.tables[0]?.table_id || null;
+  updateDraftToolbar();
+  renderList();
+  showToast('Draft session restored.');
+}
+
 function openMetadataModal(tableId) {
   const table = state.tables.find(item => item.table_id === tableId);
   if (!table) {
@@ -2599,6 +2708,8 @@ async function applyImportedTable() {
     return;
   }
   state.session = data.session || state.session;
+  delete state.axisDrafts[state.importTableId];
+  delete state.previews[state.importTableId];
   state.tables = state.tables.map(table => (table.table_id === state.importTableId ? data.table : table));
   updateDraftToolbar();
   renderList();
@@ -2642,34 +2753,59 @@ function renderImportPreview() {
   importCompare.innerHTML = `
     <div class="import-compare__column">
       <div class="import-compare__title">Current Table</div>
-      ${buildImportCompareTable(table, table.grid, table.x_labels, table.y_labels, preview.changes || [], false)}
+      ${buildImportCompareTable(
+        table,
+        table.grid,
+        table.x_labels,
+        table.y_labels,
+        preview.import_grid || table.grid,
+        preview.import_x_labels || table.x_labels,
+        preview.import_y_labels || table.y_labels,
+        false,
+      )}
     </div>
     <div class="import-compare__column">
       <div class="import-compare__title">Imported Preview</div>
-      ${buildImportCompareTable(table, preview.import_grid || table.grid, preview.import_x_labels || table.x_labels, preview.import_y_labels || table.y_labels, preview.changes || [], true)}
+      ${buildImportCompareTable(
+        table,
+        preview.import_grid || table.grid,
+        preview.import_x_labels || table.x_labels,
+        preview.import_y_labels || table.y_labels,
+        table.grid,
+        table.x_labels,
+        table.y_labels,
+        true,
+      )}
     </div>
   `;
 }
 
-function buildImportCompareTable(table, grid, xLabels, yLabels, changes, importedSide) {
+function buildImportCompareTable(table, grid, xLabels, yLabels, compareGrid, compareXLabels, compareYLabels, importedSide) {
   if (table.rows === 1 && table.cols === 1) {
     const current = formatNumber(grid?.[0]?.[0] ?? 0);
-    return `<div class="import-scalar${importedSide ? ' is-imported' : ''}">${current}${table.units ? ` <span class="scalar-units">[${escapeHtml(table.units)}]</span>` : ''}</div>`;
+    const other = formatNumber(compareGrid?.[0]?.[0] ?? 0);
+    const changed = current !== other;
+    return `<div class="import-scalar${importedSide ? ' is-imported' : ''}${changed ? ' is-preview' : ''}">${current}${table.units ? ` <span class="scalar-units">[${escapeHtml(table.units)}]</span>` : ''}</div>`;
   }
-  const changedLookup = new Set((changes || []).map(change => `${change.row}:${change.col}`));
   let html = '<div class="table-scroll"><table class="data-table import-compare-table"><thead><tr>';
   html += `<th class="row-header">${yLabels?.length ? 'Y / X' : ''}</th>`;
   for (let col = 0; col < table.cols; col += 1) {
     const label = xLabels && xLabels[col] !== undefined ? formatNumber(xLabels[col]) : `C${col}`;
-    html += `<th>${escapeHtml(label)}</th>`;
+    const otherLabel = compareXLabels && compareXLabels[col] !== undefined ? formatNumber(compareXLabels[col]) : `C${col}`;
+    const changedAxis = label !== otherLabel;
+    html += `<th class="${changedAxis ? (importedSide ? 'is-preview' : 'is-selected-cell') : ''}">${escapeHtml(label)}</th>`;
   }
   html += '</tr></thead><tbody>';
   for (let row = 0; row < table.rows; row += 1) {
     const rowLabel = yLabels && yLabels[row] !== undefined ? formatNumber(yLabels[row]) : `R${row}`;
-    html += `<tr><td class="row-label">${escapeHtml(rowLabel)}</td>`;
+    const otherRowLabel = compareYLabels && compareYLabels[row] !== undefined ? formatNumber(compareYLabels[row]) : `R${row}`;
+    const changedRowAxis = rowLabel !== otherRowLabel;
+    html += `<tr><td class="row-label ${changedRowAxis ? (importedSide ? 'is-preview' : 'is-selected-cell') : ''}">${escapeHtml(rowLabel)}</td>`;
     for (let col = 0; col < table.cols; col += 1) {
-      const key = `${row}:${col}`;
-      html += `<td class="table-cell${changedLookup.has(key) ? (importedSide ? ' is-preview' : ' is-selected-cell') : ''}">${escapeHtml(formatNumber((grid[row] || [])[col] ?? 0))}</td>`;
+      const currentValue = formatNumber((grid[row] || [])[col] ?? 0);
+      const otherValue = formatNumber((compareGrid[row] || [])[col] ?? 0);
+      const changed = currentValue !== otherValue;
+      html += `<td class="table-cell${changed ? (importedSide ? ' is-preview' : ' is-selected-cell') : ''}">${escapeHtml(currentValue)}</td>`;
     }
     html += '</tr>';
   }

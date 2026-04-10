@@ -73,6 +73,10 @@ class SessionRegistry:
         self._sessions[session.id] = session
         return session
 
+    def store(self, session: 'EditSession') -> 'EditSession':
+        self._sessions[session.id] = session
+        return session
+
     def get(self, session_id: str) -> 'EditSession':
         try:
             return self._sessions[session_id]

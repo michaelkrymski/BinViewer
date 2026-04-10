@@ -367,6 +367,31 @@ def api_session_diff(session_id):
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 500
 
 
+@app.route('/api/session/<session_id>/snapshot', methods=['GET'])
+def api_session_snapshot(session_id):
+    try:
+        session = SESSIONS.get(session_id)
+        return jsonify({'payload': session.to_payload(), 'session': session.get_summary()})
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 500
+
+
+@app.route('/api/session/restore', methods=['POST'])
+def api_session_restore():
+    try:
+        payload = request.get_json(silent=True) or {}
+        session_payload = payload.get('payload')
+        if not isinstance(session_payload, dict):
+            return jsonify({'error': 'A saved draft payload is required'}), 400
+        session = EditSession.from_payload(session_payload)
+        SESSIONS.store(session)
+        return jsonify(serialize_session(session))
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
 @app.route('/api/session/<session_id>/export', methods=['POST'])
 def api_session_export(session_id):
     try:
