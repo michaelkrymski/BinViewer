@@ -9,3 +9,4 @@ __pycache__/
 *.bak
 *.orig
 tuner_session*.json
+tmp_compare/
