@@ -1,5 +1,14 @@
 # Progress
 
+## Agent Handoff Snapshot
+- Branch: codex/editor-mvp
+- Current stable state: editor MVP is functional and pushed
+- Last pushed commit: 71821e1 Document E85v2 parity regression
+- Do not commit: .claude/settings.local.json
+- Ignore scratch files: tmp_compare/
+- Key validation: E85v2 parity regression passed for Web, CLI, and TunerPro
+- Next safest task: live UI validation of Mirror to sibling maps on real multi-map fuel/timing tables
+
 ## Current Objective
 - Refactor the tuning app into a persistent workspace with shared favorites/folders, inline table editing, and a separate compare flow.
 
