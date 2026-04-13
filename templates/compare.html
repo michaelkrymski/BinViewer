@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BIN Compare</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260409d" />
+</head>
+<body>
+<header>
+  <div class="header-inner">
+    <div class="logo">BIN Compare</div>
+    <div class="header-meta"><a href="/" style="color:inherit">Back to Workspace</a></div>
+  </div>
+</header>
+
+<div class="results-area">
+  <div class="workspace-topbar">
+    <div class="workspace-topbar__meta">
+      <div class="workspace-kicker">Compare + Transfer</div>
+      <div class="workspace-title-wrap">
+        <div class="workspace-title">Compare two BINs against one XDF</div>
+        <div class="workspace-subtitle">Review mapped changes, transfer compare-side values into the base draft, and export a merged BIN without leaving compare mode.</div>
+      </div>
+    </div>
+    <div class="workspace-topbar__actions">
+      <button class="btn btn-ghost btn-sm" id="compare-undo" disabled>Undo Last</button>
+      <button class="btn btn-ghost btn-sm" id="compare-reset" disabled>Reset Draft</button>
+      <button class="btn btn-primary btn-sm" id="compare-export" disabled>Export BIN</button>
+    </div>
+  </div>
+
+  <div class="workspace-shell" style="grid-template-columns:320px minmax(0,1fr);">
+    <aside class="workspace-sidebar" style="position:static;max-height:none;">
+      <section class="workspace-panel">
+        <div class="workspace-panel__label">Files</div>
+        <div class="file-panel">
+          <div class="drop-zone drop-zone--compact">
+            <div class="drop-label">XDF</div>
+            <input id="compare-xdf" type="file" accept=".xdf,.xml" />
+          </div>
+          <div class="drop-zone drop-zone--compact">
+            <div class="drop-label">Base BIN</div>
+            <input id="compare-bin-a" type="file" accept=".bin,.hex,*" />
+          </div>
+          <div class="drop-zone drop-zone--compact">
+            <div class="drop-label">Compare BIN</div>
+            <input id="compare-bin-b" type="file" accept=".bin,.hex,*" />
+          </div>
+          <button class="btn btn-primary btn-sm" id="compare-run">Run Compare</button>
+        </div>
+      </section>
+    </aside>
+
+    <main class="workspace-main">
+      <section class="workspace-overview" id="compare-summary"></section>
+      <section class="workspace-panel">
+        <div class="workspace-panel__label">Mapped Table Changes</div>
+        <div id="compare-tables" class="table-list">
+          <div class="workspace-empty">
+            <div class="workspace-empty__title">No compare loaded yet</div>
+            <div class="workspace-empty__copy">Load one XDF, one base BIN, and one compare BIN to surface changed definitions and transfer compare-side values into the base draft.</div>
+          </div>
+        </div>
+      </section>
+      <section class="workspace-panel" style="margin-top:0.85rem;">
+        <div class="workspace-panel__label">Raw Binary Ranges</div>
+        <div id="compare-raw" class="table-list"></div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+  const byId = id => document.getElementById(id);
+  const compareState = {
+    sessionId: null,
+    session: null,
+    tables: [],
+    rawRanges: [],
+  };
+
+  byId('compare-run').addEventListener('click', runCompare);
+  byId('compare-export').addEventListener('click', exportCompareDraft);
+  byId('compare-undo').addEventListener('click', undoCompareDraft);
+  byId('compare-reset').addEventListener('click', resetCompareDraft);
+
+  async function runCompare() {
+    const xdf = byId('compare-xdf').files[0];
+    const binA = byId('compare-bin-a').files[0];
+    const binB = byId('compare-bin-b').files[0];
+    if (!xdf || !binA || !binB) return;
+    const form = new FormData();
+    form.append('xdf', xdf);
+    form.append('bin', binA);
+    form.append('compare_bin', binB);
+    const response = await fetch('/api/compare', { method: 'POST', body: form });
+    const data = await response.json();
+    if (!response.ok) {
+      byId('compare-tables').innerHTML = '<div class="workspace-empty"><div class="workspace-empty__title">Compare failed</div><div class="workspace-empty__copy">' + (data.error || 'Unknown error') + '</div></div>';
+      return;
+    }
+    compareState.sessionId = data.session?.session_id || null;
+    compareState.session = data.session || null;
+    compareState.tables = data.tables || [];
+    compareState.rawRanges = data.raw_ranges || [];
+    renderCompareSummary(data.summary || {});
+    renderCompareTables();
+    renderRawRanges();
+    syncCompareActions();
+  }
+
+  function renderCompareSummary(summary) {
+    byId('compare-summary').innerHTML = `
+      <div class="overview-card"><div class="overview-card__eyebrow">Summary</div><div class="overview-card__title">${summary.changed_table_count || 0} changed tables</div></div>
+      <div class="overview-card"><div class="overview-card__eyebrow">Raw Diff</div><div class="overview-card__title">${summary.raw_change_range_count || 0} raw change ranges</div></div>
+      <div class="overview-card"><div class="overview-card__eyebrow">Draft</div><div class="overview-card__title">${compareState.session?.pending_change_count || 0} pending changes</div></div>
+    `;
+  }
+
+  function renderRawRanges() {
+    byId('compare-raw').innerHTML = compareState.rawRanges.map(range => `
+      <div class="table-card open">
+        <div class="card-header"><div class="card-title">0x${Number(range.start).toString(16)} - 0x${Number(range.end).toString(16)}</div><div class="card-meta">${range.length} bytes</div></div>
+        <div class="card-body"><div class="desc-short">Before: ${range.before_hex}</div><div class="desc-short">After: ${range.after_hex}</div></div>
+      </div>`).join('') || '<div class="desc-short">No raw differences detected.</div>';
+  }
+
+  function syncCompareActions() {
+    const ready = !!compareState.sessionId;
+    const pending = compareState.session?.pending_change_count || 0;
+    byId('compare-export').disabled = !ready || pending === 0;
+    byId('compare-undo').disabled = !ready || pending === 0;
+    byId('compare-reset').disabled = !ready || pending === 0;
+  }
+
+  function countTableChanges(table) {
+    const grid = table.grid || [];
+    const grid2 = table.grid2 || [];
+    let count = 0;
+    for (let row = 0; row < grid.length; row += 1) {
+      const currentRow = grid[row] || [];
+      const compareRow = grid2[row] || [];
+      for (let col = 0; col < currentRow.length; col += 1) {
+        if (compareRow[col] !== currentRow[col]) count += 1;
+      }
+    }
+    return count;
+  }
+
+  function formatValue(value) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return '';
+    const numeric = Number(value);
+    const rounded = Math.round(numeric * 1000) / 1000;
+    return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+  }
+
+  function buildCompareGrid(table, useCompareSide) {
+    const grid = (useCompareSide ? table.grid2 : table.grid) || [];
+    const xLabels = (useCompareSide ? (table.x_labels2 || table.x_labels) : table.x_labels) || [];
+    const yLabels = (useCompareSide ? (table.y_labels2 || table.y_labels) : table.y_labels) || [];
+    if ((table.rows || 0) === 1 && (table.cols || 0) === 1) {
+      const value = grid?.[0]?.[0];
+      return `<div class="import-scalar${useCompareSide ? ' is-imported' : ''}">${formatValue(value)}${table.units ? ` <span class="scalar-units">[${table.units}]</span>` : ''}</div>`;
+    }
+    let html = '<div class="table-scroll"><table class="data-table import-compare-table"><thead><tr>';
+    html += `<th class="row-header">${yLabels.length ? 'Y / X' : ''}</th>`;
+    for (let col = 0; col < (table.cols || 0); col += 1) {
+      html += `<th>${formatValue(xLabels[col])}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    for (let row = 0; row < (table.rows || 0); row += 1) {
+      html += `<tr><td class="row-label">${formatValue(yLabels[row])}</td>`;
+      for (let col = 0; col < (table.cols || 0); col += 1) {
+        const currentValue = (table.grid?.[row] || [])[col];
+        const compareValue = (table.grid2?.[row] || [])[col];
+        const activeValue = (grid[row] || [])[col];
+        const changed = currentValue !== compareValue;
+        html += `<td class="table-cell${changed ? (useCompareSide ? ' is-preview' : ' is-selected-cell') : ''}${!useCompareSide && table.editable ? ' compare-editable-cell' : ''}" data-table-id="${table.table_id}" data-row="${row}" data-col="${col}" data-side="${useCompareSide ? 'compare' : 'base'}">${formatValue(activeValue)}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    return html;
+  }
+
+  function renderCompareTables() {
+    byId('compare-tables').innerHTML = compareState.tables.map(table => `
+      <div class="table-card open">
+        <div class="card-header">
+          <div class="card-title">${table.title}</div>
+          <div class="card-meta">${table.workflow_bucket || 'Other'} · ${countTableChanges(table)} changed cells</div>
+        </div>
+        <div class="card-body">
+          <div class="desc-short">${table.rows}x${table.cols} · ${table.units || 'no units'}</div>
+          <div class="import-toolbar" style="margin:0.75rem 0 0.6rem;">
+            <button class="btn btn-ghost btn-sm compare-transfer" data-table-id="${table.table_id}" ${table.editable ? '' : 'disabled'}>Transfer Values</button>
+            <button class="btn btn-primary btn-sm compare-transfer-axes" data-table-id="${table.table_id}" ${table.editable ? '' : 'disabled'}>Transfer Values + Axes</button>
+          </div>
+          <div class="import-compare">
+            <div class="import-compare__column">
+              <div class="import-compare__title">Base BIN</div>
+              ${buildCompareGrid(table, false)}
+            </div>
+            <div class="import-compare__column">
+              <div class="import-compare__title">Compare BIN</div>
+              ${buildCompareGrid(table, true)}
+            </div>
+          </div>
+        </div>
+      </div>`).join('') || '<div class="desc-short">No mapped XDF definitions changed.</div>';
+
+    document.querySelectorAll('.compare-transfer').forEach(button => {
+      button.addEventListener('click', () => transferCompareTable(button.dataset.tableId, false));
+    });
+    document.querySelectorAll('.compare-transfer-axes').forEach(button => {
+      button.addEventListener('click', () => transferCompareTable(button.dataset.tableId, true));
+    });
+    document.querySelectorAll('.compare-editable-cell').forEach(cell => {
+      cell.addEventListener('dblclick', () => editCompareCell(cell));
+    });
+  }
+
+  async function editCompareCell(cell) {
+    if (!compareState.sessionId || cell.dataset.side !== 'base') return;
+    const current = cell.textContent.trim();
+    const next = window.prompt('Set cell value', current);
+    if (next === null) return;
+    const value = Number(next);
+    if (!Number.isFinite(value)) {
+      alert('Enter a valid numeric value.');
+      return;
+    }
+    const row = Number(cell.dataset.row);
+    const col = Number(cell.dataset.col);
+    const response = await fetch(`/api/session/${compareState.sessionId}/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table_id: cell.dataset.tableId,
+        operation: 'set_cells',
+        selection: { row_start: row, row_end: row, col_start: col, col_end: col },
+        parameters: { value },
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      alert(data.error || 'Cell edit failed');
+      return;
+    }
+    compareState.session = data.session;
+    compareState.tables = compareState.tables.map(table => table.table_id === cell.dataset.tableId ? { ...table, ...data.table } : table);
+    renderCompareSummary({
+      changed_table_count: compareState.tables.length,
+      raw_change_range_count: compareState.rawRanges.length,
+    });
+    renderCompareTables();
+    syncCompareActions();
+  }
+
+  async function transferCompareTable(tableId, includeAxes) {
+    if (!compareState.sessionId) return;
+    const response = await fetch(`/api/session/${compareState.sessionId}/transfer-reference`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table_id: tableId, include_axes: includeAxes }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      alert(data.error || 'Transfer failed');
+      return;
+    }
+    compareState.session = data.session;
+    compareState.tables = compareState.tables.map(table => table.table_id === tableId ? { ...table, ...data.table } : table);
+    renderCompareSummary({
+      changed_table_count: compareState.tables.length,
+      raw_change_range_count: compareState.rawRanges.length,
+    });
+    renderCompareTables();
+    syncCompareActions();
+  }
+
+  async function exportCompareDraft() {
+    if (!compareState.sessionId) return;
+    const response = await fetch(`/api/session/${compareState.sessionId}/export-bin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stem: 'compare-transfer' }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      alert(data.error || 'Export failed');
+      return;
+    }
+    const blob = await response.blob();
+    const exportLogPath = response.headers.get('X-Export-Log-Path');
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    link.download = match ? match[1] : 'compare-transfer.bin';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    if (exportLogPath) {
+      window.setTimeout(() => window.alert(`BIN exported. Log saved to ${exportLogPath}`), 50);
+    }
+  }
+
+  async function undoCompareDraft() {
+    if (!compareState.sessionId) return;
+    const response = await fetch(`/api/session/${compareState.sessionId}/undo`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) {
+      alert(data.error || 'Undo failed');
+      return;
+    }
+    compareState.session = data.session;
+    await refreshCompareTables();
+    syncCompareActions();
+  }
+
+  async function resetCompareDraft() {
+    if (!compareState.sessionId) return;
+    const response = await fetch(`/api/session/${compareState.sessionId}/reset`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) {
+      alert(data.error || 'Reset failed');
+      return;
+    }
+    compareState.session = data.session;
+    await refreshCompareTables();
+    syncCompareActions();
+  }
+
+  async function refreshCompareTables() {
+    const response = await fetch(`/api/session/${compareState.sessionId}`);
+    const data = await response.json();
+    if (!response.ok) return;
+    const currentTables = data.tables || [];
+    const changedIds = new Set(compareState.tables.map(table => table.table_id));
+    compareState.tables = currentTables.filter(table => changedIds.has(table.table_id) && table.has_diff);
+    renderCompareSummary({
+      changed_table_count: compareState.tables.length,
+      raw_change_range_count: compareState.rawRanges.length,
+    });
+    renderCompareTables();
+  }
+</script>
+</body>
+</html>

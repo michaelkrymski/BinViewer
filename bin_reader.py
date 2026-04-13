@@ -101,6 +101,103 @@ def _axis_count(axis: dict | None) -> int:
     return max(emb.get('row_count', 1), emb.get('col_count', 1), 1)
 
 
+def get_axis_layout(axis: dict | None, rows: int, cols: int,
+                    base_offset: int, base_subtract: bool) -> dict | None:
+    """Return the resolved byte layout for an embedded axis."""
+    if axis is None:
+        return None
+
+    embedded = axis.get('embedded')
+    if embedded is None:
+        return None
+
+    size_bits = embedded['element_size_bits']
+    size_bytes = max(size_bits // 8, 1)
+    major_stride_b = embedded['major_stride_bits']
+    minor_stride_b = embedded['minor_stride_bits']
+    col_major = major_stride_b < 0
+
+    natural_minor = size_bytes
+    natural_major = (rows * size_bytes) if col_major else (cols * size_bytes)
+
+    if minor_stride_b == 0:
+        minor_stride_bytes = natural_minor
+    else:
+        minor_stride_bytes = max(abs(minor_stride_b) // 8, natural_minor)
+
+    if major_stride_b == 0:
+        major_stride_bytes = natural_major
+    else:
+        explicit_major = abs(major_stride_b) // 8
+        if explicit_major < natural_major:
+            major_stride_bytes = natural_major
+        else:
+            major_stride_bytes = explicit_major
+
+    return {
+        'address': _file_address(embedded['address'], base_offset, base_subtract),
+        'rows': rows,
+        'cols': cols,
+        'size_bits': size_bits,
+        'size_bytes': size_bytes,
+        'type_flags': embedded['type_flags'],
+        'math': axis.get('math') or 'X',
+        'units': axis.get('units') or '',
+        'col_major': col_major,
+        'major_stride_bytes': major_stride_bytes,
+        'minor_stride_bytes': minor_stride_bytes,
+    }
+
+
+def axis_cell_address(layout: dict, row: int, col: int) -> int:
+    """Return the file byte offset for one cell in a resolved axis layout."""
+    if layout['col_major']:
+        return layout['address'] + col * layout['major_stride_bytes'] + row * layout['minor_stride_bytes']
+    return layout['address'] + row * layout['major_stride_bytes'] + col * layout['minor_stride_bytes']
+
+
+def raw_numeric_range(size_bits: int, type_flags: int,
+                      default_signed: bool = False) -> tuple[int, int]:
+    """Return the integer range representable by the axis storage type."""
+    is_signed = bool(type_flags & 0x01) or (default_signed and not (type_flags & 0x01))
+    if size_bits <= 0:
+        return (0, 0)
+    if is_signed:
+        min_value = -(2 ** (size_bits - 1))
+        max_value = (2 ** (size_bits - 1)) - 1
+    else:
+        min_value = 0
+        max_value = (2 ** size_bits) - 1
+    return (min_value, max_value)
+
+
+def pack_raw_value(value: float, size_bits: int, type_flags: int,
+                   default_le: bool = False, default_signed: bool = False) -> bytes:
+    """Pack one raw numeric value into bytes using TunerPro type flags."""
+    size_bytes = max(size_bits // 8, 1)
+    is_signed = bool(type_flags & 0x01) or (default_signed and not (type_flags & 0x01))
+    is_le = bool(type_flags & 0x02) or (default_le and not (type_flags & 0x02))
+    is_float = bool(type_flags & 0x04)
+    endian = '<' if is_le else '>'
+
+    if is_float:
+        if size_bits == 32:
+            return struct.pack(endian + 'f', float(value))
+        if size_bits == 64:
+            return struct.pack(endian + 'd', float(value))
+        raise ValueError(f'Unsupported float width: {size_bits}')
+
+    rounded = int(round(value))
+    min_value, max_value = raw_numeric_range(size_bits, type_flags, default_signed)
+    if rounded < min_value or rounded > max_value:
+        raise ValueError(f'Raw value {rounded} outside range {min_value}..{max_value}')
+
+    fmt_map = {8: ('b', 'B'), 16: ('h', 'H'), 32: ('i', 'I'), 64: ('q', 'Q')}
+    signed_fmt, unsigned_fmt = fmt_map.get(size_bits, ('B', 'B'))
+    fmt = signed_fmt if is_signed else unsigned_fmt
+    return struct.pack(endian + fmt, rounded)
+
+
 # ---------------------------------------------------------------------------
 # Core data reader
 # ---------------------------------------------------------------------------

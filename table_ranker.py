@@ -129,9 +129,12 @@ BUCKET_RULES = [
 ]
 
 SEED_PRIORITY_RULES = [
+    ("fuel (bank 1)", 5100),
+    ("fuel (bank 2)", 5050),
     ("commanded wgdc", 6000),
     ("wgdc base", 5600),
     ("wgdc p-factor", 5400),
+    ("wgdc d-factor", 5300),
     ("boost ceiling (relative) (gear x rpm)", 5200),
     ("boost ceiling", 5000),
     ("fuel scalar", 4800),
@@ -148,6 +151,105 @@ SEED_PRIORITY_RULES = [
     ("active map slots", 3700),
     ("enable map switch", 3600),
 ]
+
+MAP1_FAMILY_RULES = [
+    (re.compile(r"^fuel \(bank 1\)$", re.IGNORECASE), "Fuel (Main)", "Map 1"),
+    (re.compile(r"^fuel \(bank 2\)$", re.IGNORECASE), "Fuel (Secondary)", "Map 1"),
+    (re.compile(r"^timing \(main\)$", re.IGNORECASE), "Timing (Main)", "Map 1"),
+    (re.compile(r"^timing \(spool\)$", re.IGNORECASE), "Timing (Spool)", "Map 1"),
+]
+
+BUILTIN_DESCRIPTION_OVERLAY = {
+    "Fuel (Main)": {
+        "short": "Primary AFR target table for the active map.",
+        "long": "This is the base fueling target table you shape first for steady high-load fueling. On N55 variants with mirrored banks, keep paired bank tables aligned unless you intentionally need bank-specific behavior.",
+        "bucket": "Fueling / Ethanol",
+        "aliases": ["Fuel (Bank 1)", "Fuel (Bank 2)"],
+        "priority_note": "Core startup fueling table",
+    },
+    "Fuel (Spool)": {
+        "short": "AFR target table used during spool mode below the spool-mode RPM gate.",
+        "long": "This table gives you a separate fueling target during the low-RPM spool phase. It is one of the first places to review when transient spool behavior and turbo response are the focus.",
+        "bucket": "Fueling / Ethanol",
+    },
+    "Lambda Target Min": {
+        "short": "Global richest lambda floor that the DME will not command beyond.",
+        "long": "If your richer fuel targets go below this floor, the DME will clamp them here. This is a core guardrail table for ethanol and high-load enrichment work.",
+        "bucket": "Fueling / Ethanol",
+    },
+    "Lambda Limit Rich": {
+        "short": "Rich-side clamp that can override richer fuel targets.",
+        "long": "This limiter can win over your main fuel tables if it is set leaner than the commanded target. It is especially important to review when setting ethanol or spool enrichment targets.",
+        "bucket": "Fueling / Ethanol",
+    },
+    "Fuel Scalar": {
+        "short": "Feedforward fueling multiplier used to correct base fueling error.",
+        "long": "Use this to move the model closer so trims stay under control before you start relying on correction. It is one of the quickest tables to touch when injector or fuel hardware changes shift the base fueling model.",
+        "bucket": "Fueling / Ethanol",
+    },
+    "Timing (Main)": {
+        "short": "Primary warm ignition timing map for normal high-load operation.",
+        "long": "This is the main spark table you usually tune first for power and knock resistance once the engine is warm. Small changes here can have a large impact on torque, MBT approach, and safety margin.",
+        "bucket": "Ignition",
+    },
+    "Timing (Spool)": {
+        "short": "Ignition timing path used during spool mode.",
+        "long": "This table shapes timing during the spool-up phase below the spool-mode gate. It is useful when tuning turbo response, transient feel, and knock behavior during early boost build.",
+        "bucket": "Ignition",
+    },
+    "Load Ceiling": {
+        "short": "Primary maximum load limiter that caps requested/allowed load.",
+        "long": "This is one of the first load and torque limiters to review when you raise boost or airflow capability. If it stays too low, the rest of the tune can be ready but the ECU still will not allow the requested load.",
+        "bucket": "Torque / Load / Limits",
+        "aliases": ["Load ceiling (main)"],
+    },
+    "Torque Request Ceiling": {
+        "short": "Hard torque request cap by RPM or operating mode.",
+        "long": "This limiter can cap torque demand before the rest of the torque model has a chance to work. On higher-output setups it often needs to be brought in line with the rest of the torque strategy.",
+        "bucket": "Torque / Load / Limits",
+        "aliases": ["Torque request ceiling (Auto)"],
+    },
+    "Load To Torque Limit": {
+        "short": "Conversion limit table that defines how load is translated into modeled torque.",
+        "long": "This table helps keep the torque model coherent as you extend the operating range. It is important to preserve sensible low-end behavior while expanding the upper load range for bigger turbo setups.",
+        "bucket": "Torque / Load / Limits",
+        "aliases": ["Load to Torque limit 1", "Load to Torque limit 2"],
+    },
+    "Load Limit Factor": {
+        "short": "VE or pressure-to-load factor that strongly affects model accuracy.",
+        "long": "This is one of the most important model-shaping tables on a hardware-changed setup because it influences how pressure and airflow become calculated load. It is worth keeping near the top of any quick-start list for larger turbo work.",
+        "bucket": "Torque / Load / Limits",
+        "aliases": ["Load limiting factor", "Boost Limit multiplier", "Schluckgerade"],
+    },
+    "WGDC Base": {
+        "short": "Primary base wastegate duty table for boost control.",
+        "long": "This is one of the most frequently tuned boost tables because it sets the feedforward wastegate duty target that the rest of the control loop trims around. It is a core starting point for MHD+ custom boost setups.",
+        "bucket": "Boost / WGDC",
+        "aliases": ["WGDC Base (Custom)", "WGDC Base (Custom) (Antilag)"],
+    },
+    "WGDC P-Factor": {
+        "short": "Proportional correction table in the custom WGDC control strategy.",
+        "long": "This table shapes how aggressively boost error becomes a WGDC correction. It works with the base table and D-factor to set the feel and stability of the closed-loop boost response.",
+        "bucket": "Boost / WGDC",
+        "aliases": ["WGDC P-Factor (Custom)", "WGDC P-Factor (Custom) (Antilag)"],
+    },
+    "WGDC D-Factor": {
+        "short": "Derivative-style damping table for the custom WGDC control strategy.",
+        "long": "This table helps calm fast boost error changes and can improve overshoot control. It belongs alongside WGDC Base and WGDC P-Factor when setting up a new custom boost calibration.",
+        "bucket": "Boost / WGDC",
+        "aliases": ["WGDC D-Factor (Custom)", "WGDC D-Factor (Custom) (Antilag)"],
+    },
+    "HPFP Delivery Rate": {
+        "short": "High-pressure fuel pump delivery model used by the ECU fuel system calculations.",
+        "long": "This is especially important on upgraded pump hardware because it affects how the ECU predicts available high-pressure fuel flow. It is a strong candidate for a quick-start review on fuel-system-changed cars.",
+        "bucket": "Rail / HPFP / Fuel System",
+    },
+    "PVDMX": {
+        "short": "Key model table to review when extending the setup beyond stock airflow assumptions.",
+        "long": "You called this table out specifically for the build, so it should stay easy to find while the exact calibration strategy around it gets refined.",
+        "bucket": "Other",
+    },
+}
 
 
 def normalize_title(title: str) -> str:
@@ -186,14 +288,27 @@ def parse_title_variants(title: str) -> dict:
     variant_parts = [part for part in [map_variant, path_variant, mode_variant, axis_suffix] if part]
     variant_label = " / ".join(variant_parts)
 
+    family_title = family_title or title
+    effective_map_variant = map_variant
+    map_inferred = False
+    for pattern, inferred_family, inferred_map in MAP1_FAMILY_RULES:
+        if pattern.match(family_title):
+            family_title = inferred_family
+            if effective_map_variant is None:
+                effective_map_variant = inferred_map
+                map_inferred = True
+            break
+
     return {
-        "family_title": family_title or title,
-        "normalized_family_title": normalize_title(family_title or title),
+        "family_title": family_title,
+        "normalized_family_title": normalize_title(family_title),
         "map_variant": map_variant,
+        "effective_map_variant": effective_map_variant,
         "path_variant": path_variant,
         "mode_variant": mode_variant,
         "axis_suffix": axis_suffix,
         "variant_label": variant_label,
+        "map_inferred": map_inferred,
     }
 
 
@@ -229,14 +344,21 @@ def load_tuning_history() -> dict[str, dict]:
 
 @lru_cache(maxsize=1)
 def load_description_overlay() -> dict[str, dict]:
+    entries = _normalize_overlay_entries(BUILTIN_DESCRIPTION_OVERLAY)
     if not DESCRIPTION_OVERLAY_PATH.exists():
-        return {}
+        return entries
 
     try:
         raw = json.loads(DESCRIPTION_OVERLAY_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return entries
 
+    file_entries = _normalize_overlay_entries(raw)
+    entries.update(file_entries)
+    return entries
+
+
+def _normalize_overlay_entries(raw: dict | list) -> dict[str, dict]:
     entries = {}
     if isinstance(raw, dict):
         iterable = raw.items()
@@ -273,7 +395,6 @@ def load_description_overlay() -> dict[str, dict]:
             for record in [title, *aliases]:
                 if record:
                     entries[normalize_title(record)] = entry
-
     return entries
 
 
@@ -318,7 +439,12 @@ def build_table_metadata(table_def: dict, categories_map: dict[int, str]) -> dic
         "low_priority_reason": low_priority_reason,
         "primary_category_path": primary_category_path or ["Uncategorised"],
         "family_title": variants["family_title"],
+        "family_key": family_normalized,
+        "preference_key": normalized,
         "map_variant": variants["map_variant"],
+        "effective_map_variant": variants["effective_map_variant"],
+        "map_inferred": variants["map_inferred"],
+        "is_shared_global": _is_shared_global(variants, normalized, table_def),
         "path_variant": variants["path_variant"],
         "mode_variant": variants["mode_variant"],
         "variant_label": variants["variant_label"],
@@ -430,3 +556,11 @@ def _parse_timestamp(value: str | None) -> datetime | None:
         return datetime.strptime(value.strip(), "%m/%d/%Y %H:%M:%S")
     except ValueError:
         return None
+
+
+def _is_shared_global(variants: dict, normalized: str, table_def: dict) -> bool:
+    if variants.get("map_variant"):
+        return False
+    if variants.get("map_inferred"):
+        return False
+    return True

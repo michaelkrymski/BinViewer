@@ -8,3 +8,6 @@ __pycache__/
 *.tmp
 *.bak
 *.orig
+tuner_session*.json
+tmp_compare/
+.claude/
