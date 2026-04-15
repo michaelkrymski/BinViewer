@@ -66,6 +66,8 @@ const state = {
   selectionAnchors: {},
   importTableId: null,
   importPreview: null,
+  project: null,
+  projectBins: [],
 };
 
 const AI_CONTEXT_PROMPT = `You are an expert automotive ECU tuning assistant. I will share ECU calibration data copied from TunerPro XDF Viewer.
@@ -161,6 +163,15 @@ const importCompare = $('import-compare');
 const btnImportClear = $('import-clear');
 const btnImportPreview = $('import-preview-btn');
 const btnImportApply = $('import-apply-btn');
+const projectStatus = $('project-status');
+const projectMeta = $('project-meta');
+const projectBinSelect = $('project-bin-select');
+const projectSaveMode = $('project-save-mode');
+const btnProjectLoad = $('btn-project-load');
+const btnProjectRefresh = $('btn-project-refresh');
+const btnProjectSaveDraft = $('btn-project-save-draft');
+const btnProjectRestoreDraft = $('btn-project-restore-draft');
+const btnProjectExport = $('btn-project-export');
 
 let debugTables = [];
 let dragSelection = null;
@@ -172,6 +183,7 @@ function init() {
   wireToolbar();
   wireModals();
   loadPreferences();
+  loadProjectStatus();
   updateParseBtn();
   syncHideAutogenButton();
   updateDraftToolbar();
@@ -264,6 +276,12 @@ function wireToolbar() {
   btnUndoDraft.addEventListener('click', undoDraft);
   btnResetDraft.addEventListener('click', resetDraft);
   btnExportDraft.addEventListener('click', exportDraft);
+  btnProjectLoad.addEventListener('click', parseProjectBin);
+  btnProjectRefresh.addEventListener('click', loadProjectBins);
+  btnProjectSaveDraft.addEventListener('click', saveProjectDraft);
+  btnProjectRestoreDraft.addEventListener('click', restoreProjectDraft);
+  btnProjectExport.addEventListener('click', exportProjectDraft);
+  projectSaveMode.addEventListener('change', updateProjectSaveMode);
 }
 
 function wireModals() {
@@ -376,17 +394,7 @@ async function doParse() {
       throw new Error(data.error || 'Server error');
     }
 
-    state.tables = data.tables || [];
-    state.categories = data.categories || {};
-    state.hasDiff = state.tables.some(table => table.has_diff);
-    state.session = data.session || null;
-    state.selections = {};
-    state.previews = {};
-    state.editorForms = {};
-    state.axisDrafts = {};
-    if (data.preferences) {
-      state.preferences = normalizePreferences(data.preferences);
-    }
+    applySessionPayload(data);
 
     setTimeout(() => {
       showProgress(false);
@@ -397,6 +405,25 @@ async function doParse() {
     showProgress(false);
     showError(error.message);
     updateParseBtn();
+  }
+}
+
+function applySessionPayload(data) {
+  state.tables = data.tables || [];
+  state.categories = data.categories || {};
+  state.hasDiff = state.tables.some(table => table.has_diff);
+  state.session = data.session || null;
+  state.selections = {};
+  state.previews = {};
+  state.editorForms = {};
+  state.axisDrafts = {};
+  state.selectedTableId = null;
+  if (data.preferences) {
+    state.preferences = normalizePreferences(data.preferences);
+  }
+  if (data.project) {
+    state.project = data.project;
+    renderProjectPanel();
   }
 }
 
@@ -446,11 +473,203 @@ function renderDebugOutput(tables) {
   debugOutput.textContent = lines.join('\n');
 }
 
+async function loadProjectStatus() {
+  try {
+    const response = await fetch('/api/project/status');
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Project status failed.');
+    }
+    state.project = data.project || null;
+    renderProjectPanel();
+    if (state.project?.active_project) {
+      loadProjectBins();
+    }
+  } catch (error) {
+    projectStatus.textContent = 'Tray project unavailable';
+    projectMeta.textContent = error.message;
+    syncProjectButtons();
+  }
+}
+
+async function loadProjectBins() {
+  if (!state.project?.active_project) {
+    renderProjectPanel();
+    return;
+  }
+  try {
+    const response = await fetch('/api/project/bins');
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Project BIN list failed.');
+    }
+    state.projectBins = data.bins || [];
+    if (data.project) {
+      state.project = data.project;
+    }
+    renderProjectPanel();
+  } catch (error) {
+    showToast(error.message);
+    syncProjectButtons();
+  }
+}
+
+function renderProjectPanel() {
+  const project = state.project?.active_project;
+  if (!project) {
+    projectStatus.textContent = 'No active tray project';
+    projectMeta.textContent = 'Use the Windows tray app to create or select a project.';
+    projectBinSelect.innerHTML = '<option value="">Use last project BIN</option>';
+    projectSaveMode.value = 'new_revision';
+    syncProjectButtons();
+    return;
+  }
+  projectStatus.textContent = project.name || 'Active project';
+  const binName = project.last_bin_name || 'no BIN selected';
+  const xdfName = project.xdf_name || 'no XDF selected';
+  projectMeta.textContent = `${xdfName} · ${binName} · ${project.remote_save_mode === 'small_edit' ? 'small edit saves' : 'new revision saves'}`;
+  projectSaveMode.value = project.remote_save_mode || 'new_revision';
+  const currentValue = projectBinSelect.value;
+  const options = ['<option value="">Use last project BIN</option>'];
+  state.projectBins.forEach(item => {
+    options.push(`<option value="${escapeHtml(item.path)}"${item.is_last ? ' selected' : ''}>${escapeHtml(item.name)}</option>`);
+  });
+  projectBinSelect.innerHTML = options.join('');
+  if (currentValue && state.projectBins.some(item => item.path === currentValue)) {
+    projectBinSelect.value = currentValue;
+  }
+  syncProjectButtons();
+}
+
+function syncProjectButtons() {
+  const hasProject = Boolean(state.project?.active_project);
+  const hasSession = Boolean(state.session?.session_id);
+  btnProjectLoad.disabled = !hasProject;
+  btnProjectRefresh.disabled = !hasProject;
+  btnProjectRestoreDraft.disabled = !hasProject;
+  btnProjectSaveDraft.disabled = !hasProject || !hasSession;
+  btnProjectExport.disabled = !hasProject || !hasSession || !(state.session?.export_ready || state.session?.pending_change_count);
+  projectSaveMode.disabled = !hasProject;
+  projectBinSelect.disabled = !hasProject;
+}
+
+async function parseProjectBin() {
+  hideError();
+  showProgress(true);
+  try {
+    const response = await fetch('/api/project/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bin_path: projectBinSelect.value || undefined }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Project load failed.');
+    }
+    applySessionPayload(data);
+    setProjectFileStatus();
+    showProgress(false);
+    renderResults();
+    showToast('Project BIN loaded.');
+  } catch (error) {
+    showProgress(false);
+    showError(error.message);
+  }
+}
+
+async function saveProjectDraft() {
+  if (!state.session?.session_id) {
+    showToast('No active draft to save.');
+    return;
+  }
+  const response = await fetch('/api/project/draft/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: state.session.session_id }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Project draft save failed.');
+    return;
+  }
+  if (data.project) {
+    state.project = data.project;
+    renderProjectPanel();
+  }
+  showToast(`Project draft saved to ${data.draft_path}`);
+}
+
+async function restoreProjectDraft() {
+  const response = await fetch('/api/project/draft/restore', { method: 'POST' });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Project draft restore failed.');
+    return;
+  }
+  applySessionPayload(data);
+  setProjectFileStatus();
+  renderResults();
+  showToast('Project draft restored.');
+}
+
+async function updateProjectSaveMode() {
+  const response = await fetch('/api/project/save-mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ remote_save_mode: projectSaveMode.value }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Save mode update failed.');
+    renderProjectPanel();
+    return;
+  }
+  state.project = data.project || state.project;
+  renderProjectPanel();
+  showToast(projectSaveMode.value === 'small_edit' ? 'Small edit saves enabled.' : 'New revision saves enabled.');
+}
+
+async function exportProjectDraft() {
+  if (!state.session?.session_id) {
+    showToast('No active draft to export.');
+    return;
+  }
+  const response = await fetch('/api/project/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: state.session.session_id }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    showToast(data.error || 'Project export failed.');
+    return;
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('content-disposition') || '';
+  const exportPath = response.headers.get('X-Export-Path') || '';
+  const exportLogPath = response.headers.get('X-Export-Log-Path') || '';
+  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  const filename = match ? match[1] : 'edited-bin.bin';
+  downloadBlob(blob, filename);
+  await loadProjectStatus();
+  showToast(exportLogPath ? `Project BIN saved to ${exportPath}. Log saved to ${exportLogPath}` : 'Project BIN exported.');
+}
+
+function setProjectFileStatus() {
+  if (!state.session) {
+    return;
+  }
+  $('status-xdf').textContent = `Project XDF: ${state.session.source_xdf_name || 'loaded'}`;
+  $('status-bin').textContent = `Project BIN: ${state.session.source_bin_name || 'loaded'}`;
+  $('drop-xdf').classList.add('has-file');
+  $('drop-bin').classList.add('has-file');
+}
+
 function renderResults() {
   resultsArea.style.display = '';
-  const loaded = Boolean(state.tables.length && state.files.xdf && state.files.bin);
+  const loaded = Boolean(state.tables.length && (state.session || (state.files.xdf && state.files.bin)));
   headerMeta.textContent = loaded
-    ? `${state.files.xdf?.name || ''} · ${state.files.bin?.name || ''} · ${state.tables.length} definitions`
+    ? `${state.session?.source_xdf_name || state.files.xdf?.name || ''} · ${state.session?.source_bin_name || state.files.bin?.name || ''} · ${state.tables.length} definitions`
     : 'No files loaded';
   viewModeSelect.value = state.viewMode;
   if (!state.selectedCategory) {
@@ -907,6 +1126,7 @@ function updateDraftToolbar() {
     btnResetDraft.disabled = true;
     btnExportDraft.disabled = true;
     btnExportBinTop.disabled = true;
+    syncProjectButtons();
     return;
   }
 
@@ -918,6 +1138,7 @@ function updateDraftToolbar() {
   btnResetDraft.disabled = pending === 0;
   btnExportDraft.disabled = !exportReady;
   btnExportBinTop.disabled = !exportReady;
+  syncProjectButtons();
 }
 
 function snapshotOpenState() {
@@ -2228,7 +2449,7 @@ async function exportDraft() {
   const response = await fetch(`/api/session/${state.session.session_id}/export-bin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ stem: stripExtension(state.files.bin?.name || 'edited-bin') }),
+    body: JSON.stringify({ stem: stripExtension(state.files.bin?.name || state.session?.source_bin_name || 'edited-bin') }),
   });
 
   if (!response.ok) {

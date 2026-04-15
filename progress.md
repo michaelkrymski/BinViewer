@@ -1,8 +1,8 @@
 # Progress
 
 ## Agent Handoff Snapshot
-- Branch: codex/editor-mvp
-- Current stable state: editor MVP is functional and pushed
+- Branch: codex/editor-main
+- Current stable state: editor workspace is functional and pushed
 - Last pushed commit: 71821e1 Document E85v2 parity regression
 - Do not commit: .claude/settings.local.json
 - Ignore scratch files: tmp_compare/
@@ -13,8 +13,8 @@
 - Refactor the tuning app into a persistent workspace with shared favorites/folders, inline table editing, and a separate compare flow.
 
 ## Active Branch / Workspace
-- Real repo branch: `codex/editor-mvp`
-- Working copy: `C:\Users\Michael Krymski\Documents\TunerPro Converter`
+- Real repo branch: `codex/editor-main`
+- Working copy: `D:\Development\BinViewer`
 
 ## Completed
 - Read-only viewer baseline preserved and tagged as `v0.1-readonly-baseline`.

@@ -579,16 +579,34 @@ class EditSession:
         output_path = Path(output_path)
         output_path.write_bytes(bytes(self.working_bin))
         log_path = output_path.with_suffix(output_path.suffix + '.changes.json')
-        log_path.write_text(
-            json.dumps(
-                {
+        export_entry = {
+            'session': self.get_summary(),
+            'pending_edits': self.pending_edits,
+            'exported_at': datetime.now().isoformat(timespec='seconds'),
+        }
+        if log_path.exists():
+            try:
+                existing = json.loads(log_path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+            if isinstance(existing, dict) and isinstance(existing.get('exports'), list):
+                log_payload = existing
+                log_payload['exports'].append(export_entry)
+                log_payload['session'] = self.get_summary()
+                log_payload['pending_edits'] = self.pending_edits
+            else:
+                log_payload = {
                     'session': self.get_summary(),
                     'pending_edits': self.pending_edits,
-                },
-                indent=2,
-            ),
-            encoding='utf-8',
-        )
+                    'exports': [export_entry],
+                }
+        else:
+            log_payload = {
+                'session': self.get_summary(),
+                'pending_edits': self.pending_edits,
+                'exports': [export_entry],
+            }
+        log_path.write_text(json.dumps(log_payload, indent=2), encoding='utf-8')
         return {
             'bin_path': str(output_path),
             'log_path': str(log_path),

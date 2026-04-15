@@ -79,6 +79,32 @@
         </div>
       </section>
 
+      <section class="workspace-panel" id="project-panel">
+        <div class="workspace-panel__label">Tray Project</div>
+        <div class="file-panel">
+          <div class="drop-status" id="project-status">No tray project detected</div>
+          <div class="drop-status" id="project-meta"></div>
+          <label class="view-select-label" for="project-bin-select">Project BIN</label>
+          <select class="view-select" id="project-bin-select">
+            <option value="">Use last project BIN</option>
+          </select>
+          <label class="view-select-label" for="project-save-mode">Remote Save Mode</label>
+          <select class="view-select" id="project-save-mode">
+            <option value="new_revision">New Revision</option>
+            <option value="small_edit">Small Edit</option>
+          </select>
+          <div class="file-actions">
+            <button class="btn btn-primary btn-sm" id="btn-project-load" disabled>Load Project BIN</button>
+            <button class="btn btn-ghost btn-sm" id="btn-project-refresh" disabled>Refresh BINs</button>
+          </div>
+          <div class="file-actions">
+            <button class="btn btn-ghost btn-sm" id="btn-project-save-draft" disabled>Save Project Draft</button>
+            <button class="btn btn-ghost btn-sm" id="btn-project-restore-draft" disabled>Restore Project Draft</button>
+          </div>
+          <button class="btn btn-primary btn-sm btn-block" id="btn-project-export" disabled>Export to Project</button>
+        </div>
+      </section>
+
       <section class="workspace-panel">
         <div class="workspace-panel__label">Browse</div>
         <div class="search-wrap search-wrap--sidebar">
