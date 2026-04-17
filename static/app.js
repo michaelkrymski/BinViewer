@@ -68,6 +68,7 @@ const state = {
   importPreview: null,
   project: null,
   projectBins: [],
+  tableClipboard: null,
 };
 
 const AI_CONTEXT_PROMPT = `You are an expert automotive ECU tuning assistant. I will share ECU calibration data copied from TunerPro XDF Viewer.
@@ -87,6 +88,42 @@ HOW TO INTERPRET IT
 - When diff values are present, focus on what changed and why it might matter.
 
 When I paste a table, respond like a tuning-aware assistant that understands ECU maps, ignition, fueling, boost control, torque modeling, and limiters.`;
+
+const AI_TABLE_IMPORT_TEMPLATE = `Fill or revise the ECU calibration table below and return only a TunerPro XDF Viewer import block.
+
+RULES
+- Keep the same table shape unless I explicitly ask for different axes.
+- If changing only cell values, use Mode: values_only.
+- If changing cell values and X/Y breakpoint labels, use Mode: values_and_axes.
+- Return numeric values only in the Values section. Do not include explanations inside the import block.
+- Preserve row and column order exactly.
+- For scalars, return one value.
+
+OUTPUT FORMAT
+[TABLE IMPORT]
+Title: <exact table title>
+Mode: values_only
+
+X Axis:
+<comma-separated X labels if present>
+
+Y Axis:
+<comma-separated Y labels if present>
+
+Values:
+<comma-separated row 1>
+<comma-separated row 2>
+<continue for every row>
+
+TABLE TO FILL
+Title: <table title>
+Units: <units or blank>
+Rows: <row count>
+Columns: <column count>
+X Axis: <current X labels if present>
+Y Axis: <current Y labels if present>
+Current Values:
+<paste copied table values here>`;
 
 const $ = id => document.getElementById(id);
 const resultsArea = $('results-area');
@@ -163,6 +200,7 @@ const importCompare = $('import-compare');
 const btnImportClear = $('import-clear');
 const btnImportPreview = $('import-preview-btn');
 const btnImportApply = $('import-apply-btn');
+const btnImportCopyTemplate = $('import-copy-template');
 const projectStatus = $('project-status');
 const projectMeta = $('project-meta');
 const projectBinSelect = $('project-bin-select');
@@ -172,6 +210,10 @@ const btnProjectRefresh = $('btn-project-refresh');
 const btnProjectSaveDraft = $('btn-project-save-draft');
 const btnProjectRestoreDraft = $('btn-project-restore-draft');
 const btnProjectExport = $('btn-project-export');
+const clipboardModal = $('clipboard-modal');
+const clipboardText = $('clipboard-text');
+const btnClipboardClose = $('clipboard-close');
+const btnClipboardSelect = $('clipboard-select');
 
 let debugTables = [];
 let dragSelection = null;
@@ -190,6 +232,8 @@ function init() {
   aiContextText.textContent = AI_CONTEXT_PROMPT;
   viewModeSelect.value = state.viewMode;
   window.addEventListener('mouseup', () => { dragSelection = null; });
+  document.addEventListener('copy', handleTableCopy);
+  document.addEventListener('paste', handleTablePaste);
   renderResults();
 }
 
@@ -290,9 +334,12 @@ function wireModals() {
   $('metadata-close').addEventListener('click', closeMetadataModal);
   $('folder-close').addEventListener('click', closeFolderModal);
   $('import-close').addEventListener('click', closeImportModal);
+  btnClipboardClose.addEventListener('click', closeClipboardModal);
+  btnClipboardSelect.addEventListener('click', selectClipboardFallbackText);
   btnQuickAddClose.addEventListener('click', closeQuickAddModal);
   btnQuickAddCancel.addEventListener('click', closeQuickAddModal);
   btnImportClear.addEventListener('click', clearImportModal);
+  btnImportCopyTemplate.addEventListener('click', copyImportTemplate);
   btnImportPreview.addEventListener('click', previewImportedTable);
   btnImportApply.addEventListener('click', applyImportedTable);
   btnQuickAddClear.addEventListener('click', () => {
@@ -332,6 +379,11 @@ function wireModals() {
   importModal.addEventListener('click', event => {
     if (event.target === importModal) {
       closeImportModal();
+    }
+  });
+  clipboardModal.addEventListener('click', event => {
+    if (event.target === clipboardModal) {
+      closeClipboardModal();
     }
   });
 
@@ -634,14 +686,41 @@ async function exportProjectDraft() {
     showToast('No active draft to export.');
     return;
   }
+  const project = state.project?.active_project || {};
+  let description;
+  if ((projectSaveMode.value || project.remote_save_mode) === 'new_revision') {
+    const defaultDescription = getDescriptionFromFilename(project.last_bin_name || state.session?.source_bin_name || '');
+    const entered = window.prompt('Revision description for the exported BIN:', defaultDescription);
+    if (entered === null) {
+      showToast('Project export cancelled.');
+      return;
+    }
+    description = entered.trim();
+  }
+  const shouldDownload = !isLocalHost();
   const response = await fetch('/api/project/export', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: state.session.session_id }),
+    body: JSON.stringify({
+      session_id: state.session.session_id,
+      description,
+      download: shouldDownload,
+    }),
   });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     showToast(data.error || 'Project export failed.');
+    return;
+  }
+  if (!shouldDownload) {
+    const data = await response.json();
+    if (data.project) {
+      state.project = data.project;
+      renderProjectPanel();
+    } else {
+      await loadProjectStatus();
+    }
+    showToast(data.log_path ? `Project BIN saved to ${data.export_path}. Log saved to ${data.log_path}` : 'Project BIN saved.');
     return;
   }
   const blob = await response.blob();
@@ -653,6 +732,16 @@ async function exportProjectDraft() {
   downloadBlob(blob, filename);
   await loadProjectStatus();
   showToast(exportLogPath ? `Project BIN saved to ${exportPath}. Log saved to ${exportLogPath}` : 'Project BIN exported.');
+}
+
+function isLocalHost() {
+  const host = window.location.hostname;
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+}
+
+function getDescriptionFromFilename(filename) {
+  const match = String(filename || '').match(/^[^.]*?(?:v|mk)\d+\(([^)]*)\)/i);
+  return match ? match[1] : '';
 }
 
 function setProjectFileStatus() {
@@ -2012,6 +2101,136 @@ function selectionContains(selection, row, col) {
     && col <= selection.col_end;
 }
 
+function isTextEditingTarget(target) {
+  const element = target instanceof Element ? target : null;
+  return Boolean(element?.closest('input, textarea, select, [contenteditable="true"], .inline-cell-input'));
+}
+
+function getSelectedEditableTable() {
+  if (!state.selectedTableId) {
+    return null;
+  }
+  const table = state.tables.find(item => item.table_id === state.selectedTableId);
+  if (!table || !table.editable || table.error || table.has_diff) {
+    return null;
+  }
+  const selection = normalizeSelection(state.selections[table.table_id]);
+  if (!selection) {
+    return null;
+  }
+  return { table, selection };
+}
+
+function getSelectionValueBlock(table, selection) {
+  if (!selection?.is_rectangular) {
+    return null;
+  }
+  const rows = [];
+  for (let row = selection.row_start; row <= selection.row_end; row += 1) {
+    const values = [];
+    for (let col = selection.col_start; col <= selection.col_end; col += 1) {
+      values.push(Number((table.grid[row] || [])[col]));
+    }
+    rows.push(values);
+  }
+  return rows;
+}
+
+function serializeValueBlock(values) {
+  return values.map(row => row.map(value => String(value)).join('\t')).join('\n');
+}
+
+function parseValueBlock(text) {
+  const rows = String(text || '')
+    .trim()
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => line.split(/\t|,/).map(value => Number(value.trim())));
+  if (!rows.length || rows.some(row => !row.length || row.some(value => !Number.isFinite(value)))) {
+    return null;
+  }
+  return rows;
+}
+
+function handleTableCopy(event) {
+  if (isTextEditingTarget(event.target)) {
+    return;
+  }
+  const selected = getSelectedEditableTable();
+  if (!selected) {
+    return;
+  }
+  const values = getSelectionValueBlock(selected.table, selected.selection);
+  if (!values) {
+    showToast('Copy needs one rectangular selection.');
+    return;
+  }
+  const text = serializeValueBlock(values);
+  state.tableClipboard = {
+    tableId: selected.table.table_id,
+    values,
+    text,
+  };
+  event.clipboardData.setData('text/plain', text);
+  event.preventDefault();
+  showToast(values.length === 1 ? 'Copied row.' : 'Copied cells.');
+}
+
+async function handleTablePaste(event) {
+  if (isTextEditingTarget(event.target)) {
+    return;
+  }
+  const selected = getSelectedEditableTable();
+  if (!selected) {
+    return;
+  }
+  const text = event.clipboardData?.getData('text/plain') || '';
+  const values = parseValueBlock(text) || state.tableClipboard?.values;
+  if (!values || !values.length) {
+    return;
+  }
+  event.preventDefault();
+  await pasteValueBlock(selected.table, selected.selection, values);
+}
+
+async function pasteValueBlock(table, selection, values) {
+  if (!state.session?.session_id) {
+    showToast('No active editing session.');
+    return;
+  }
+  const startRow = selection.row_start;
+  const startCol = selection.col_start;
+  const response = await fetch(`/api/session/${state.session.session_id}/paste`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      table_id: table.table_id,
+      start_row: startRow,
+      start_col: startCol,
+      values,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Paste failed.');
+    return;
+  }
+  state.session = data.session || state.session;
+  state.previews[table.table_id] = data.preview || null;
+  state.tables = state.tables.map(item => (item.table_id === table.table_id ? data.table : item));
+  if (data.preview?.selection) {
+    state.selections[table.table_id] = normalizeSelection(data.preview.selection);
+    state.selectionAnchors[table.table_id] = {
+      row: data.preview.selection.row_start,
+      col: data.preview.selection.col_start,
+    };
+  }
+  updateDraftToolbar();
+  renderList();
+  showToast('Pasted values into draft.');
+}
+
 function wireEditableCard(card, table) {
   const tableId = table.table_id;
   wireEditableScope(card, table, { hasCellGrid: true });
@@ -2948,6 +3167,53 @@ function clearImportModal() {
   importText.focus();
 }
 
+function copyImportTemplate() {
+  const table = state.tables.find(item => item.table_id === state.importTableId);
+  if (!table) {
+    return copyText(AI_TABLE_IMPORT_TEMPLATE);
+  }
+  const lines = [
+    'Fill or revise this ECU calibration table and return only a TunerPro XDF Viewer import block.',
+    '',
+    'RULES',
+    '- Keep the same table shape unless I explicitly ask for different axes.',
+    '- Use Mode: values_only for normal value changes.',
+    '- Use Mode: values_and_axes only if you also change X/Y breakpoint labels.',
+    '- Return numeric values only in the Values section. Do not include explanations inside the import block.',
+    '- Preserve row and column order exactly.',
+    '',
+    'OUTPUT FORMAT',
+    '[TABLE IMPORT]',
+    `Title: ${getDisplayTitle(table)}`,
+    `Mode: ${importMode.value || 'values_only'}`,
+    '',
+  ];
+  if (Array.isArray(table.x_labels) && table.x_labels.length) {
+    lines.push('X Axis:');
+    lines.push(table.x_labels.map(formatNumber).join(','));
+    lines.push('');
+  }
+  if (Array.isArray(table.y_labels) && table.y_labels.length) {
+    lines.push('Y Axis:');
+    lines.push(table.y_labels.map(formatNumber).join(','));
+    lines.push('');
+  }
+  lines.push('Values:');
+  buildImportValueRows(table).forEach(row => lines.push(row));
+  lines.push('');
+  lines.push('REQUEST');
+  lines.push('Replace the values above with your recommended filled table, keeping the same import format.');
+  return copyText(lines.join('\n'));
+}
+
+function buildImportValueRows(table) {
+  const grid = table.grid || [];
+  if (table.type === 'constant' || (table.rows === 1 && table.cols === 1)) {
+    return [formatNumber(grid?.[0]?.[0] ?? 0)];
+  }
+  return grid.map(row => (row || []).map(formatNumber).join(','));
+}
+
 function showImportError(message) {
   importError.textContent = message;
   importError.style.display = 'block';
@@ -3267,16 +3533,62 @@ function copyForAI(table) {
   copyText(lines.join('\n'));
 }
 
-function copyText(text) {
-  navigator.clipboard.writeText(text).then(showToast).catch(() => {
+async function copyText(text) {
+  const value = String(text || '');
+  if (!value) {
+    showToast('Nothing to copy.');
+    return false;
+  }
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      showToast('Copied to this device.');
+      return true;
+    }
+  } catch (error) {
+    // Fall through to the legacy path and final manual-copy modal.
+  }
+
+  try {
     const textarea = document.createElement('textarea');
-    textarea.value = text;
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
     document.body.appendChild(textarea);
+    textarea.focus();
     textarea.select();
-    document.execCommand('copy');
+    textarea.setSelectionRange(0, textarea.value.length);
+    const copied = document.execCommand('copy');
     textarea.remove();
-    showToast();
-  });
+    if (copied) {
+      showToast('Copied to this device.');
+      return true;
+    }
+  } catch (error) {
+    // Show the modal below.
+  }
+
+  openClipboardModal(value);
+  showToast('Clipboard blocked. Select the text to copy.');
+  return false;
+}
+
+function openClipboardModal(text) {
+  clipboardText.value = String(text || '');
+  clipboardModal.style.display = 'flex';
+  selectClipboardFallbackText();
+}
+
+function closeClipboardModal() {
+  clipboardModal.style.display = 'none';
+}
+
+function selectClipboardFallbackText() {
+  clipboardText.focus();
+  clipboardText.select();
+  clipboardText.setSelectionRange(0, clipboardText.value.length);
 }
 
 function resetAll() {

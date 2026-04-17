@@ -290,6 +290,7 @@
             <option value="values_and_axes">Values + Axes</option>
           </select>
         </label>
+        <button class="btn btn-ghost btn-sm" id="import-copy-template">Copy AI Template</button>
         <button class="btn btn-ghost btn-sm" id="import-clear">Clear</button>
         <button class="btn btn-ghost btn-sm" id="import-preview-btn">Preview</button>
         <button class="btn btn-primary btn-sm" id="import-apply-btn" disabled>Apply to Draft</button>
@@ -309,8 +310,24 @@ Values:
   </div>
 </div>
 
+<div class="modal-backdrop" id="clipboard-modal" style="display:none">
+  <div class="modal modal--wide">
+    <div class="modal-header">
+      <span>Copy Text</span>
+      <button class="modal-close" id="clipboard-close">x</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Your browser blocked automatic clipboard access. Select the text below and copy it from this device.</p>
+      <textarea id="clipboard-text" class="import-textarea" rows="12"></textarea>
+      <div class="metadata-form__actions">
+        <button class="btn btn-primary btn-sm" id="clipboard-select">Select Text</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="copy-toast">Copied to clipboard!</div>
 
-<script src="/static/app.js?v=20260409c"></script>
+<script src="/static/app.js?v=20260417a"></script>
 </body>
 </html>

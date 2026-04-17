@@ -279,6 +279,92 @@ class EditSession:
             'pending_edits': deepcopy(self.pending_edits),
         }
 
+    def paste_values(self, table_id: str, start_row: int, start_col: int, values: list[list[float]]) -> dict:
+        """Paste a rectangular value block into a table, clipping at table bounds."""
+        binding = self._require_binding(table_id)
+        entry = self._current_tables[table_id]
+        if not entry.get('editable'):
+            raise ValueError(f'Table {table_id} is not editable')
+        if entry.get('error'):
+            raise ValueError(f"Table {table_id} cannot be edited: {entry['error']}")
+
+        start_row = int(start_row)
+        start_col = int(start_col)
+        if start_row < 0 or start_row >= entry['rows']:
+            raise ValueError(f'Paste row {start_row} outside table bounds 0:{entry["rows"] - 1}')
+        if start_col < 0 or start_col >= entry['cols']:
+            raise ValueError(f'Paste column {start_col} outside table bounds 0:{entry["cols"] - 1}')
+
+        clean_values = normalize_paste_values(values)
+        if not clean_values:
+            raise ValueError('Paste values must include at least one numeric cell')
+
+        before_grid = deepcopy(entry['grid'])
+        after_grid = deepcopy(before_grid)
+        pasted_count = 0
+        for row_offset, row_values in enumerate(clean_values):
+            target_row = start_row + row_offset
+            if target_row >= entry['rows']:
+                break
+            for col_offset, value in enumerate(row_values):
+                target_col = start_col + col_offset
+                if target_col >= entry['cols']:
+                    break
+                after_grid[target_row][target_col] = value
+                pasted_count += 1
+
+        if pasted_count == 0:
+            raise ValueError('Paste target is outside the editable table area')
+
+        changes = summarize_changes(before_grid, after_grid)
+        self._history.append({
+            'working_bin': bytes(self.working_bin),
+            'pending_edits': deepcopy(self.pending_edits),
+            'dirty_table_ids': set(self.dirty_table_ids),
+        })
+
+        write_grid_to_bin(self.working_bin, binding.table_def, after_grid)
+        self._refresh_table(table_id)
+
+        row_count = len(clean_values)
+        col_count = max(len(row) for row in clean_values)
+        selection = {
+            'row_start': start_row,
+            'row_end': min(entry['rows'] - 1, start_row + row_count - 1),
+            'col_start': start_col,
+            'col_end': min(entry['cols'] - 1, start_col + col_count - 1),
+            'is_rectangular': True,
+        }
+        preview = {
+            'table_id': table_id,
+            'table_title': entry['title'],
+            'selection': selection,
+            'operation': 'paste_values',
+            'parameters': {'row_count': row_count, 'col_count': col_count},
+            'summary': build_preview_summary(changes),
+            'changes': changes[:160],
+            'changes_truncated': len(changes) > 160,
+            'after_grid': after_grid,
+            'selection_bounds': entry['selection_bounds'],
+        }
+        edit_record = {
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'table_id': table_id,
+            'table_title': self._current_tables[table_id]['title'],
+            'operation': 'paste_values',
+            'selection': selection,
+            'parameters': preview['parameters'],
+            'summary': preview['summary'],
+        }
+        self.pending_edits.append(edit_record)
+        self._recompute_dirty_tables()
+        return {
+            'preview': drop_preview_grid(preview),
+            'table': deepcopy(self._current_tables[table_id]),
+            'session': self.get_summary(),
+            'pending_edits': deepcopy(self.pending_edits),
+        }
+
     def apply_axis_edit(self, table_id: str, axis_name: str, values: list[float]) -> dict:
         """Write X or Y axis breakpoint values into the working BIN."""
         binding = self._require_binding(table_id)
@@ -574,11 +660,15 @@ class EditSession:
             'session': self.get_summary(),
         }
 
-    def export_bin_and_log(self, output_path: str | Path) -> dict:
+    def export_bin_and_log(self, output_path: str | Path, log_dir: str | Path | None = None) -> dict:
         """Write the draft BIN and a companion JSON change log to disk."""
         output_path = Path(output_path)
         output_path.write_bytes(bytes(self.working_bin))
-        log_path = output_path.with_suffix(output_path.suffix + '.changes.json')
+        if log_dir:
+            log_path = Path(log_dir) / f'{output_path.name}.changes.json'
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            log_path = output_path.with_suffix(output_path.suffix + '.changes.json')
         export_entry = {
             'session': self.get_summary(),
             'pending_edits': self.pending_edits,
@@ -823,6 +913,25 @@ def sanitize_parameters(parameters: dict) -> dict:
         if isinstance(value, (int, float, str, bool)) or value is None:
             clean[key] = value
     return clean
+
+
+def normalize_paste_values(values: list[list[float]]) -> list[list[float]]:
+    """Coerce a pasted 2D value block into finite floats."""
+    if not isinstance(values, list):
+        raise ValueError('Paste values must be a list of rows')
+    clean_rows = []
+    for row in values:
+        if not isinstance(row, list):
+            raise ValueError('Paste values must be a list of rows')
+        clean_row = []
+        for value in row:
+            numeric = _coerce_float(value)
+            if numeric is None:
+                raise ValueError('Paste values must be numeric')
+            clean_row.append(numeric)
+        if clean_row:
+            clean_rows.append(clean_row)
+    return clean_rows
 
 
 def apply_operation_to_grid(grid: list[list[float]], selection: dict, operation: str, parameters: dict) -> list[list[float]]:

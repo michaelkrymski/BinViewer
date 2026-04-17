@@ -36,6 +36,7 @@ class ServerController:
     def __init__(self, port: int = DEFAULT_PORT) -> None:
         self.port = port
         self.host = "127.0.0.1"
+        self.public_url_mode = "local"
         self.pin = ""
         self._server = None
         self._thread: threading.Thread | None = None
@@ -48,12 +49,14 @@ class ServerController:
     def lan_enabled(self) -> bool:
         return self.running and self.host == "0.0.0.0"
 
-    def start(self, *, lan: bool = False) -> str:
+    def start(self, *, lan: bool = False, tailscale: bool = False) -> str:
         if self.running:
             self.stop()
-        self.host = "0.0.0.0" if lan else "127.0.0.1"
-        self.pin = f"{random.randint(0, 999999):06d}" if lan else ""
-        configure_lan_access(enabled=lan, pin=self.pin)
+        remote = lan or tailscale
+        self.host = "0.0.0.0" if remote else "127.0.0.1"
+        self.public_url_mode = "tailscale" if tailscale else ("lan" if lan else "local")
+        self.pin = f"{random.randint(0, 999999):06d}" if remote else ""
+        configure_lan_access(enabled=remote, pin=self.pin)
         self._server = make_server(self.host, self.port, app, threaded=True)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
@@ -67,10 +70,13 @@ class ServerController:
         self._thread = None
         self.pin = ""
         self.host = "127.0.0.1"
+        self.public_url_mode = "local"
 
     @property
     def url(self) -> str:
-        if self.lan_enabled:
+        if self.public_url_mode == "tailscale":
+            return f"http://{get_tailscale_ip()}:{self.port}"
+        if self.public_url_mode == "lan":
             return f"http://{get_lan_ip()}:{self.port}"
         return f"http://127.0.0.1:{self.port}"
 
@@ -94,6 +100,7 @@ class LauncherApp:
         return pystray.Menu(
             pystray.MenuItem("Start Local Server", self.start_local, enabled=lambda _: not self.server.running),
             pystray.MenuItem("Host on LAN", self.start_lan, enabled=lambda _: not self.server.running),
+            pystray.MenuItem("Host on Tailscale", self.start_tailscale, enabled=lambda _: not self.server.running),
             pystray.MenuItem("Stop Server", self.stop_server, enabled=lambda _: self.server.running),
             pystray.MenuItem("Open Workspace", self.open_workspace, enabled=lambda _: self.server.running),
             pystray.MenuItem("Copy Server URL", self.copy_url, enabled=lambda _: self.server.running),
@@ -121,6 +128,18 @@ class LauncherApp:
             webbrowser.open(url)
         except OSError as exc:
             logging.exception("LAN server failed")
+            show_message("Server failed", str(exc), error=True)
+
+    def start_tailscale(self, *_args) -> None:
+        try:
+            url = self.server.start(tailscale=True)
+            self.icon.title = f"BIN Viewer - Tailscale PIN {self.server.pin}"
+            copy_to_clipboard(url)
+            logging.info("Started Tailscale server at %s with PIN %s", url, self.server.pin)
+            self.icon.notify(f"Open {url} from your laptop. PIN: {self.server.pin}", "Tailscale hosting started")
+            webbrowser.open(url)
+        except OSError as exc:
+            logging.exception("Tailscale server failed")
             show_message("Server failed", str(exc), error=True)
 
     def stop_server(self, *_args) -> None:
@@ -168,6 +187,7 @@ class ProjectDialog:
             "bin_folder": tk.StringVar(),
             "last_bin_path": tk.StringVar(),
             "output_folder": tk.StringVar(),
+            "log_folder": tk.StringVar(),
             "draft_path": tk.StringVar(),
             "save_template": tk.StringVar(value=DEFAULT_SAVE_TEMPLATE),
             "description": tk.StringVar(),
@@ -201,6 +221,7 @@ class ProjectDialog:
         row = self._path_row(frame, row, "BIN folder", "bin_folder", self._browse_bin_folder)
         row = self._path_row(frame, row, "Last BIN", "last_bin_path", self._browse_last_bin)
         row = self._path_row(frame, row, "Output folder", "output_folder", self._browse_output_folder)
+        row = self._path_row(frame, row, "Change log folder", "log_folder", self._browse_log_folder)
         row = self._path_row(frame, row, "Draft path", "draft_path", self._browse_draft_path)
         row = self._path_row(frame, row, "Save template", "save_template")
         row = self._path_row(frame, row, "Description", "description")
@@ -301,6 +322,11 @@ class ProjectDialog:
         if path:
             self.vars["output_folder"].set(path)
 
+    def _browse_log_folder(self) -> None:
+        path = filedialog.askdirectory()
+        if path:
+            self.vars["log_folder"].set(path)
+
     def _browse_draft_path(self) -> None:
         path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
         if path:
@@ -322,6 +348,24 @@ def get_lan_ip() -> str:
             return sock.getsockname()[0]
     except OSError:
         return socket.gethostbyname(socket.gethostname())
+
+
+def get_tailscale_ip() -> str:
+    try:
+        result = subprocess.run(
+            ["tailscale", "ip", "-4"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            value = line.strip()
+            if value:
+                return value
+    except (OSError, subprocess.SubprocessError):
+        logging.exception("Could not detect Tailscale IP")
+    return get_lan_ip()
 
 
 def show_message(title: str, message: str, *, error: bool = False) -> None:
@@ -346,5 +390,16 @@ def copy_to_clipboard(text: str) -> None:
 if __name__ == "__main__":
     if "--projects" in sys.argv:
         ProjectDialog(ProjectStore()).show()
+    elif "--tailscale" in sys.argv:
+        controller = ServerController()
+        url = controller.start(tailscale=True)
+        copy_to_clipboard(url)
+        print(f"Tailscale server: {url}")
+        print(f"PIN: {controller.pin}")
+        print("Press Ctrl+C to stop.")
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            controller.stop()
     else:
         LauncherApp().run()

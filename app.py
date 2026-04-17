@@ -373,8 +373,12 @@ def api_project_export():
         project = PROJECTS.get_active_project()
         if not project:
             return jsonify({'error': 'No active project configured in the Windows tray app'}), 404
-        output_path, metadata = build_project_export_path(project, source_bin_name=session.source_bin_name)
-        result = session.export_bin_and_log(output_path)
+        output_path, metadata = build_project_export_path(
+            project,
+            source_bin_name=session.source_bin_name,
+            description=payload.get('description') if 'description' in payload else None,
+        )
+        result = session.export_bin_and_log(output_path, log_dir=project.get('log_folder') or None)
         PROJECTS.update_active_project({
             'last_bin_path': str(output_path),
             'bin_folder': project.get('bin_folder') or str(output_path.parent),
@@ -383,6 +387,15 @@ def api_project_export():
             'revision_number': metadata['next_revision_number'],
             'small_edit_output_path': metadata['small_edit_output_path'],
         })
+        if payload.get('download', True) is False:
+            return jsonify({
+                'filename': Path(result['bin_path']).name,
+                'export_path': result['bin_path'],
+                'log_path': result['log_path'],
+                'remote_save_mode': metadata['mode'],
+                'project': serialize_store_for_api(PROJECTS.load()),
+                'session': result['session'],
+            })
         response = send_file(
             BytesIO(Path(result['bin_path']).read_bytes()),
             mimetype='application/octet-stream',
@@ -509,6 +522,24 @@ def api_session_axis(session_id):
         result = session.apply_axis_edit(
             payload.get('table_id', ''),
             payload.get('axis', ''),
+            payload.get('values') or [],
+        )
+        return jsonify(result)
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/session/<session_id>/paste', methods=['POST'])
+def api_session_paste(session_id):
+    try:
+        session = SESSIONS.get(session_id)
+        payload = request.get_json(silent=True) or {}
+        result = session.paste_values(
+            payload.get('table_id', ''),
+            payload.get('start_row', 0),
+            payload.get('start_col', 0),
             payload.get('values') or [],
         )
         return jsonify(result)

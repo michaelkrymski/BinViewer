@@ -31,6 +31,7 @@ DEFAULT_PROJECT = {
     "bin_folder": "",
     "last_bin_path": "",
     "output_folder": "",
+    "log_folder": "",
     "draft_path": "",
     "save_template": DEFAULT_SAVE_TEMPLATE,
     "description": "",
@@ -135,7 +136,7 @@ def normalize_project(raw: dict) -> dict:
                 project[key] = raw[key]
     project["id"] = str(project.get("id") or "").strip()
     project["name"] = str(project.get("name") or "Default Project").strip() or "Default Project"
-    for key in ("xdf_path", "bin_folder", "last_bin_path", "output_folder", "draft_path", "small_edit_output_path"):
+    for key in ("xdf_path", "bin_folder", "last_bin_path", "output_folder", "log_folder", "draft_path", "small_edit_output_path"):
         project[key] = str(project.get(key) or "").strip()
     project["save_template"] = str(project.get("save_template") or DEFAULT_SAVE_TEMPLATE).strip() or DEFAULT_SAVE_TEMPLATE
     project["description"] = sanitize_description(project.get("description") or "")
@@ -173,6 +174,7 @@ def serialize_project_for_api(project: dict | None) -> dict | None:
     out["xdf_name"] = Path(out["xdf_path"]).name if out.get("xdf_path") else ""
     out["last_bin_name"] = Path(out["last_bin_path"]).name if out.get("last_bin_path") else ""
     out["output_folder_name"] = Path(out["output_folder"]).name if out.get("output_folder") else ""
+    out["log_folder_name"] = Path(out["log_folder"]).name if out.get("log_folder") else ""
     return out
 
 
@@ -214,7 +216,12 @@ def get_project_draft_path(project: dict) -> Path:
     return APP_DIR / "drafts" / f"{sanitize_filename_stem(project['name'])}.draft.json"
 
 
-def build_project_export_path(project: dict, *, source_bin_name: str | None = None) -> tuple[Path, dict]:
+def build_project_export_path(
+    project: dict,
+    *,
+    source_bin_name: str | None = None,
+    description: str | None = None,
+) -> tuple[Path, dict]:
     mode = project.get("remote_save_mode") if project.get("remote_save_mode") in REMOTE_SAVE_MODES else "new_revision"
     output_folder = Path(project.get("output_folder") or Path(project.get("last_bin_path") or ".").parent)
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -223,18 +230,23 @@ def build_project_export_path(project: dict, *, source_bin_name: str | None = No
     split = split_revision_token(source_stem)
     base_stem = split["base_stem"] or source_stem
     prefix = split["prefix"] or project.get("revision_prefix") or "v"
+    has_source_revision = bool(split["number"])
     current_number = split["number"] or max(0, int(project.get("revision_number") or 1) - 1)
+    export_description = sanitize_description(
+        description if description is not None else (
+            project.get("description") or split.get("description") or ""
+        )
+    )
 
     if mode == "new_revision":
-        next_number = max(current_number + 1, int(project.get("revision_number") or 1))
+        next_number = current_number + 1 if has_source_revision else int(project.get("revision_number") or 1)
         token = f"{prefix}{next_number}"
-        description = sanitize_description(project.get("description") or "")
         stem = render_save_template(project.get("save_template") or DEFAULT_SAVE_TEMPLATE, {
             "stem": source_stem,
             "source_stem": base_stem,
             "token": token,
             "n": str(next_number),
-            "description": description,
+            "description": export_description,
             "date": datetime.now().strftime("%Y%m%d"),
             "time": datetime.now().strftime("%H%M%S"),
         })
@@ -244,20 +256,11 @@ def build_project_export_path(project: dict, *, source_bin_name: str | None = No
     else:
         next_number = max(current_number, int(project.get("revision_number") or 1))
         token = f"{prefix}{current_number}" if current_number else f"{prefix}{next_number}"
-        description = sanitize_description(project.get("description") or "edit")
         if project.get("small_edit_output_path"):
             path = Path(project["small_edit_output_path"])
             stem = path.stem
         else:
-            stem = render_save_template(project.get("save_template") or DEFAULT_SAVE_TEMPLATE, {
-                "stem": source_stem,
-                "source_stem": base_stem,
-                "token": token,
-                "n": str(next_number),
-                "description": description,
-                "date": datetime.now().strftime("%Y%m%d"),
-                "time": datetime.now().strftime("%H%M%S"),
-            })
+            stem = source_stem
             path = output_folder / f"{sanitize_filename_stem(stem)}.bin"
         advanced_revision_number = int(project.get("revision_number") or 1)
         small_edit_output_path = str(path)
@@ -270,7 +273,7 @@ def build_project_export_path(project: dict, *, source_bin_name: str | None = No
         "revision_number": next_number,
         "next_revision_number": advanced_revision_number,
         "token": token,
-        "description": description,
+        "description": export_description,
         "small_edit_output_path": small_edit_output_path,
     }
     return path, metadata
@@ -284,15 +287,20 @@ def render_save_template(template: str, values: dict[str, str]) -> str:
 
 
 def split_revision_token(stem: str) -> dict:
-    match = re.match(r"^(?P<base>.*?)(?:[_\-\s]?)(?P<prefix>v|mk)(?P<number>\d+)$", stem, re.IGNORECASE)
+    match = re.match(
+        r"^(?P<base>.*?)(?:[_\-\s]?)(?P<prefix>v|mk)(?P<number>\d+)(?:\((?P<description>[^)]*)\))?(?P<trailing>.*)$",
+        stem,
+        re.IGNORECASE,
+    )
     if not match:
-        return {"base_stem": stem, "prefix": "", "number": 0}
+        return {"base_stem": stem, "prefix": "", "number": 0, "description": ""}
     base = match.group("base").rstrip("_- ")
     prefix = match.group("prefix")
     return {
         "base_stem": base or stem,
         "prefix": prefix,
         "number": int(match.group("number")),
+        "description": sanitize_description(match.group("description") or ""),
     }
 
 
