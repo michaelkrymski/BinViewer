@@ -79,6 +79,32 @@
         </div>
       </section>
 
+      <section class="workspace-panel" id="project-panel">
+        <div class="workspace-panel__label">Tray Project</div>
+        <div class="file-panel">
+          <div class="drop-status" id="project-status">No tray project detected</div>
+          <div class="drop-status" id="project-meta"></div>
+          <label class="view-select-label" for="project-bin-select">Project BIN</label>
+          <select class="view-select" id="project-bin-select">
+            <option value="">Use last project BIN</option>
+          </select>
+          <label class="view-select-label" for="project-save-mode">Remote Save Mode</label>
+          <select class="view-select" id="project-save-mode">
+            <option value="new_revision">New Revision</option>
+            <option value="small_edit">Small Edit</option>
+          </select>
+          <div class="file-actions">
+            <button class="btn btn-primary btn-sm" id="btn-project-load" disabled>Load Project BIN</button>
+            <button class="btn btn-ghost btn-sm" id="btn-project-refresh" disabled>Refresh BINs</button>
+          </div>
+          <div class="file-actions">
+            <button class="btn btn-ghost btn-sm" id="btn-project-save-draft" disabled>Save Project Draft</button>
+            <button class="btn btn-ghost btn-sm" id="btn-project-restore-draft" disabled>Restore Project Draft</button>
+          </div>
+          <button class="btn btn-primary btn-sm btn-block" id="btn-project-export" disabled>Export to Project</button>
+        </div>
+      </section>
+
       <section class="workspace-panel">
         <div class="workspace-panel__label">Browse</div>
         <div class="search-wrap search-wrap--sidebar">
@@ -264,6 +290,7 @@
             <option value="values_and_axes">Values + Axes</option>
           </select>
         </label>
+        <button class="btn btn-ghost btn-sm" id="import-copy-template">Copy AI Template</button>
         <button class="btn btn-ghost btn-sm" id="import-clear">Clear</button>
         <button class="btn btn-ghost btn-sm" id="import-preview-btn">Preview</button>
         <button class="btn btn-primary btn-sm" id="import-apply-btn" disabled>Apply to Draft</button>
@@ -283,8 +310,24 @@ Values:
   </div>
 </div>
 
+<div class="modal-backdrop" id="clipboard-modal" style="display:none">
+  <div class="modal modal--wide">
+    <div class="modal-header">
+      <span>Copy Text</span>
+      <button class="modal-close" id="clipboard-close">x</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Your browser blocked automatic clipboard access. Select the text below and copy it from this device.</p>
+      <textarea id="clipboard-text" class="import-textarea" rows="12"></textarea>
+      <div class="metadata-form__actions">
+        <button class="btn btn-primary btn-sm" id="clipboard-select">Select Text</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="copy-toast">Copied to clipboard!</div>
 
-<script src="/static/app.js?v=20260409c"></script>
+<script src="/static/app.js?v=20260417a"></script>
 </body>
 </html>

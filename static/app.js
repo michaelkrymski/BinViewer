@@ -66,6 +66,9 @@ const state = {
   selectionAnchors: {},
   importTableId: null,
   importPreview: null,
+  project: null,
+  projectBins: [],
+  tableClipboard: null,
 };
 
 const AI_CONTEXT_PROMPT = `You are an expert automotive ECU tuning assistant. I will share ECU calibration data copied from TunerPro XDF Viewer.
@@ -85,6 +88,42 @@ HOW TO INTERPRET IT
 - When diff values are present, focus on what changed and why it might matter.
 
 When I paste a table, respond like a tuning-aware assistant that understands ECU maps, ignition, fueling, boost control, torque modeling, and limiters.`;
+
+const AI_TABLE_IMPORT_TEMPLATE = `Fill or revise the ECU calibration table below and return only a TunerPro XDF Viewer import block.
+
+RULES
+- Keep the same table shape unless I explicitly ask for different axes.
+- If changing only cell values, use Mode: values_only.
+- If changing cell values and X/Y breakpoint labels, use Mode: values_and_axes.
+- Return numeric values only in the Values section. Do not include explanations inside the import block.
+- Preserve row and column order exactly.
+- For scalars, return one value.
+
+OUTPUT FORMAT
+[TABLE IMPORT]
+Title: <exact table title>
+Mode: values_only
+
+X Axis:
+<comma-separated X labels if present>
+
+Y Axis:
+<comma-separated Y labels if present>
+
+Values:
+<comma-separated row 1>
+<comma-separated row 2>
+<continue for every row>
+
+TABLE TO FILL
+Title: <table title>
+Units: <units or blank>
+Rows: <row count>
+Columns: <column count>
+X Axis: <current X labels if present>
+Y Axis: <current Y labels if present>
+Current Values:
+<paste copied table values here>`;
 
 const $ = id => document.getElementById(id);
 const resultsArea = $('results-area');
@@ -161,6 +200,20 @@ const importCompare = $('import-compare');
 const btnImportClear = $('import-clear');
 const btnImportPreview = $('import-preview-btn');
 const btnImportApply = $('import-apply-btn');
+const btnImportCopyTemplate = $('import-copy-template');
+const projectStatus = $('project-status');
+const projectMeta = $('project-meta');
+const projectBinSelect = $('project-bin-select');
+const projectSaveMode = $('project-save-mode');
+const btnProjectLoad = $('btn-project-load');
+const btnProjectRefresh = $('btn-project-refresh');
+const btnProjectSaveDraft = $('btn-project-save-draft');
+const btnProjectRestoreDraft = $('btn-project-restore-draft');
+const btnProjectExport = $('btn-project-export');
+const clipboardModal = $('clipboard-modal');
+const clipboardText = $('clipboard-text');
+const btnClipboardClose = $('clipboard-close');
+const btnClipboardSelect = $('clipboard-select');
 
 let debugTables = [];
 let dragSelection = null;
@@ -172,12 +225,15 @@ function init() {
   wireToolbar();
   wireModals();
   loadPreferences();
+  loadProjectStatus();
   updateParseBtn();
   syncHideAutogenButton();
   updateDraftToolbar();
   aiContextText.textContent = AI_CONTEXT_PROMPT;
   viewModeSelect.value = state.viewMode;
   window.addEventListener('mouseup', () => { dragSelection = null; });
+  document.addEventListener('copy', handleTableCopy);
+  document.addEventListener('paste', handleTablePaste);
   renderResults();
 }
 
@@ -264,6 +320,12 @@ function wireToolbar() {
   btnUndoDraft.addEventListener('click', undoDraft);
   btnResetDraft.addEventListener('click', resetDraft);
   btnExportDraft.addEventListener('click', exportDraft);
+  btnProjectLoad.addEventListener('click', parseProjectBin);
+  btnProjectRefresh.addEventListener('click', loadProjectBins);
+  btnProjectSaveDraft.addEventListener('click', saveProjectDraft);
+  btnProjectRestoreDraft.addEventListener('click', restoreProjectDraft);
+  btnProjectExport.addEventListener('click', exportProjectDraft);
+  projectSaveMode.addEventListener('change', updateProjectSaveMode);
 }
 
 function wireModals() {
@@ -272,9 +334,12 @@ function wireModals() {
   $('metadata-close').addEventListener('click', closeMetadataModal);
   $('folder-close').addEventListener('click', closeFolderModal);
   $('import-close').addEventListener('click', closeImportModal);
+  btnClipboardClose.addEventListener('click', closeClipboardModal);
+  btnClipboardSelect.addEventListener('click', selectClipboardFallbackText);
   btnQuickAddClose.addEventListener('click', closeQuickAddModal);
   btnQuickAddCancel.addEventListener('click', closeQuickAddModal);
   btnImportClear.addEventListener('click', clearImportModal);
+  btnImportCopyTemplate.addEventListener('click', copyImportTemplate);
   btnImportPreview.addEventListener('click', previewImportedTable);
   btnImportApply.addEventListener('click', applyImportedTable);
   btnQuickAddClear.addEventListener('click', () => {
@@ -314,6 +379,11 @@ function wireModals() {
   importModal.addEventListener('click', event => {
     if (event.target === importModal) {
       closeImportModal();
+    }
+  });
+  clipboardModal.addEventListener('click', event => {
+    if (event.target === clipboardModal) {
+      closeClipboardModal();
     }
   });
 
@@ -376,17 +446,7 @@ async function doParse() {
       throw new Error(data.error || 'Server error');
     }
 
-    state.tables = data.tables || [];
-    state.categories = data.categories || {};
-    state.hasDiff = state.tables.some(table => table.has_diff);
-    state.session = data.session || null;
-    state.selections = {};
-    state.previews = {};
-    state.editorForms = {};
-    state.axisDrafts = {};
-    if (data.preferences) {
-      state.preferences = normalizePreferences(data.preferences);
-    }
+    applySessionPayload(data);
 
     setTimeout(() => {
       showProgress(false);
@@ -397,6 +457,25 @@ async function doParse() {
     showProgress(false);
     showError(error.message);
     updateParseBtn();
+  }
+}
+
+function applySessionPayload(data) {
+  state.tables = data.tables || [];
+  state.categories = data.categories || {};
+  state.hasDiff = state.tables.some(table => table.has_diff);
+  state.session = data.session || null;
+  state.selections = {};
+  state.previews = {};
+  state.editorForms = {};
+  state.axisDrafts = {};
+  state.selectedTableId = null;
+  if (data.preferences) {
+    state.preferences = normalizePreferences(data.preferences);
+  }
+  if (data.project) {
+    state.project = data.project;
+    renderProjectPanel();
   }
 }
 
@@ -446,11 +525,240 @@ function renderDebugOutput(tables) {
   debugOutput.textContent = lines.join('\n');
 }
 
+async function loadProjectStatus() {
+  try {
+    const response = await fetch('/api/project/status');
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Project status failed.');
+    }
+    state.project = data.project || null;
+    renderProjectPanel();
+    if (state.project?.active_project) {
+      loadProjectBins();
+    }
+  } catch (error) {
+    projectStatus.textContent = 'Tray project unavailable';
+    projectMeta.textContent = error.message;
+    syncProjectButtons();
+  }
+}
+
+async function loadProjectBins() {
+  if (!state.project?.active_project) {
+    renderProjectPanel();
+    return;
+  }
+  try {
+    const response = await fetch('/api/project/bins');
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Project BIN list failed.');
+    }
+    state.projectBins = data.bins || [];
+    if (data.project) {
+      state.project = data.project;
+    }
+    renderProjectPanel();
+  } catch (error) {
+    showToast(error.message);
+    syncProjectButtons();
+  }
+}
+
+function renderProjectPanel() {
+  const project = state.project?.active_project;
+  if (!project) {
+    projectStatus.textContent = 'No active tray project';
+    projectMeta.textContent = 'Use the Windows tray app to create or select a project.';
+    projectBinSelect.innerHTML = '<option value="">Use last project BIN</option>';
+    projectSaveMode.value = 'new_revision';
+    syncProjectButtons();
+    return;
+  }
+  projectStatus.textContent = project.name || 'Active project';
+  const binName = project.last_bin_name || 'no BIN selected';
+  const xdfName = project.xdf_name || 'no XDF selected';
+  projectMeta.textContent = `${xdfName} · ${binName} · ${project.remote_save_mode === 'small_edit' ? 'small edit saves' : 'new revision saves'}`;
+  projectSaveMode.value = project.remote_save_mode || 'new_revision';
+  const currentValue = projectBinSelect.value;
+  const options = ['<option value="">Use last project BIN</option>'];
+  state.projectBins.forEach(item => {
+    options.push(`<option value="${escapeHtml(item.path)}"${item.is_last ? ' selected' : ''}>${escapeHtml(item.name)}</option>`);
+  });
+  projectBinSelect.innerHTML = options.join('');
+  if (currentValue && state.projectBins.some(item => item.path === currentValue)) {
+    projectBinSelect.value = currentValue;
+  }
+  syncProjectButtons();
+}
+
+function syncProjectButtons() {
+  const hasProject = Boolean(state.project?.active_project);
+  const hasSession = Boolean(state.session?.session_id);
+  btnProjectLoad.disabled = !hasProject;
+  btnProjectRefresh.disabled = !hasProject;
+  btnProjectRestoreDraft.disabled = !hasProject;
+  btnProjectSaveDraft.disabled = !hasProject || !hasSession;
+  btnProjectExport.disabled = !hasProject || !hasSession || !(state.session?.export_ready || state.session?.pending_change_count);
+  projectSaveMode.disabled = !hasProject;
+  projectBinSelect.disabled = !hasProject;
+}
+
+async function parseProjectBin() {
+  hideError();
+  showProgress(true);
+  try {
+    const response = await fetch('/api/project/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bin_path: projectBinSelect.value || undefined }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Project load failed.');
+    }
+    applySessionPayload(data);
+    setProjectFileStatus();
+    showProgress(false);
+    renderResults();
+    showToast('Project BIN loaded.');
+  } catch (error) {
+    showProgress(false);
+    showError(error.message);
+  }
+}
+
+async function saveProjectDraft() {
+  if (!state.session?.session_id) {
+    showToast('No active draft to save.');
+    return;
+  }
+  const response = await fetch('/api/project/draft/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: state.session.session_id }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Project draft save failed.');
+    return;
+  }
+  if (data.project) {
+    state.project = data.project;
+    renderProjectPanel();
+  }
+  showToast(`Project draft saved to ${data.draft_path}`);
+}
+
+async function restoreProjectDraft() {
+  const response = await fetch('/api/project/draft/restore', { method: 'POST' });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Project draft restore failed.');
+    return;
+  }
+  applySessionPayload(data);
+  setProjectFileStatus();
+  renderResults();
+  showToast('Project draft restored.');
+}
+
+async function updateProjectSaveMode() {
+  const response = await fetch('/api/project/save-mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ remote_save_mode: projectSaveMode.value }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Save mode update failed.');
+    renderProjectPanel();
+    return;
+  }
+  state.project = data.project || state.project;
+  renderProjectPanel();
+  showToast(projectSaveMode.value === 'small_edit' ? 'Small edit saves enabled.' : 'New revision saves enabled.');
+}
+
+async function exportProjectDraft() {
+  if (!state.session?.session_id) {
+    showToast('No active draft to export.');
+    return;
+  }
+  const project = state.project?.active_project || {};
+  let description;
+  if ((projectSaveMode.value || project.remote_save_mode) === 'new_revision') {
+    const defaultDescription = getDescriptionFromFilename(project.last_bin_name || state.session?.source_bin_name || '');
+    const entered = window.prompt('Revision description for the exported BIN:', defaultDescription);
+    if (entered === null) {
+      showToast('Project export cancelled.');
+      return;
+    }
+    description = entered.trim();
+  }
+  const shouldDownload = !isLocalHost();
+  const response = await fetch('/api/project/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: state.session.session_id,
+      description,
+      download: shouldDownload,
+    }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    showToast(data.error || 'Project export failed.');
+    return;
+  }
+  if (!shouldDownload) {
+    const data = await response.json();
+    if (data.project) {
+      state.project = data.project;
+      renderProjectPanel();
+    } else {
+      await loadProjectStatus();
+    }
+    showToast(data.log_path ? `Project BIN saved to ${data.export_path}. Log saved to ${data.log_path}` : 'Project BIN saved.');
+    return;
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('content-disposition') || '';
+  const exportPath = response.headers.get('X-Export-Path') || '';
+  const exportLogPath = response.headers.get('X-Export-Log-Path') || '';
+  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  const filename = match ? match[1] : 'edited-bin.bin';
+  downloadBlob(blob, filename);
+  await loadProjectStatus();
+  showToast(exportLogPath ? `Project BIN saved to ${exportPath}. Log saved to ${exportLogPath}` : 'Project BIN exported.');
+}
+
+function isLocalHost() {
+  const host = window.location.hostname;
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+}
+
+function getDescriptionFromFilename(filename) {
+  const match = String(filename || '').match(/^[^.]*?(?:v|mk)\d+\(([^)]*)\)/i);
+  return match ? match[1] : '';
+}
+
+function setProjectFileStatus() {
+  if (!state.session) {
+    return;
+  }
+  $('status-xdf').textContent = `Project XDF: ${state.session.source_xdf_name || 'loaded'}`;
+  $('status-bin').textContent = `Project BIN: ${state.session.source_bin_name || 'loaded'}`;
+  $('drop-xdf').classList.add('has-file');
+  $('drop-bin').classList.add('has-file');
+}
+
 function renderResults() {
   resultsArea.style.display = '';
-  const loaded = Boolean(state.tables.length && state.files.xdf && state.files.bin);
+  const loaded = Boolean(state.tables.length && (state.session || (state.files.xdf && state.files.bin)));
   headerMeta.textContent = loaded
-    ? `${state.files.xdf?.name || ''} · ${state.files.bin?.name || ''} · ${state.tables.length} definitions`
+    ? `${state.session?.source_xdf_name || state.files.xdf?.name || ''} · ${state.session?.source_bin_name || state.files.bin?.name || ''} · ${state.tables.length} definitions`
     : 'No files loaded';
   viewModeSelect.value = state.viewMode;
   if (!state.selectedCategory) {
@@ -907,6 +1215,7 @@ function updateDraftToolbar() {
     btnResetDraft.disabled = true;
     btnExportDraft.disabled = true;
     btnExportBinTop.disabled = true;
+    syncProjectButtons();
     return;
   }
 
@@ -918,6 +1227,7 @@ function updateDraftToolbar() {
   btnResetDraft.disabled = pending === 0;
   btnExportDraft.disabled = !exportReady;
   btnExportBinTop.disabled = !exportReady;
+  syncProjectButtons();
 }
 
 function snapshotOpenState() {
@@ -1791,6 +2101,136 @@ function selectionContains(selection, row, col) {
     && col <= selection.col_end;
 }
 
+function isTextEditingTarget(target) {
+  const element = target instanceof Element ? target : null;
+  return Boolean(element?.closest('input, textarea, select, [contenteditable="true"], .inline-cell-input'));
+}
+
+function getSelectedEditableTable() {
+  if (!state.selectedTableId) {
+    return null;
+  }
+  const table = state.tables.find(item => item.table_id === state.selectedTableId);
+  if (!table || !table.editable || table.error || table.has_diff) {
+    return null;
+  }
+  const selection = normalizeSelection(state.selections[table.table_id]);
+  if (!selection) {
+    return null;
+  }
+  return { table, selection };
+}
+
+function getSelectionValueBlock(table, selection) {
+  if (!selection?.is_rectangular) {
+    return null;
+  }
+  const rows = [];
+  for (let row = selection.row_start; row <= selection.row_end; row += 1) {
+    const values = [];
+    for (let col = selection.col_start; col <= selection.col_end; col += 1) {
+      values.push(Number((table.grid[row] || [])[col]));
+    }
+    rows.push(values);
+  }
+  return rows;
+}
+
+function serializeValueBlock(values) {
+  return values.map(row => row.map(value => String(value)).join('\t')).join('\n');
+}
+
+function parseValueBlock(text) {
+  const rows = String(text || '')
+    .trim()
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => line.split(/\t|,/).map(value => Number(value.trim())));
+  if (!rows.length || rows.some(row => !row.length || row.some(value => !Number.isFinite(value)))) {
+    return null;
+  }
+  return rows;
+}
+
+function handleTableCopy(event) {
+  if (isTextEditingTarget(event.target)) {
+    return;
+  }
+  const selected = getSelectedEditableTable();
+  if (!selected) {
+    return;
+  }
+  const values = getSelectionValueBlock(selected.table, selected.selection);
+  if (!values) {
+    showToast('Copy needs one rectangular selection.');
+    return;
+  }
+  const text = serializeValueBlock(values);
+  state.tableClipboard = {
+    tableId: selected.table.table_id,
+    values,
+    text,
+  };
+  event.clipboardData.setData('text/plain', text);
+  event.preventDefault();
+  showToast(values.length === 1 ? 'Copied row.' : 'Copied cells.');
+}
+
+async function handleTablePaste(event) {
+  if (isTextEditingTarget(event.target)) {
+    return;
+  }
+  const selected = getSelectedEditableTable();
+  if (!selected) {
+    return;
+  }
+  const text = event.clipboardData?.getData('text/plain') || '';
+  const values = parseValueBlock(text) || state.tableClipboard?.values;
+  if (!values || !values.length) {
+    return;
+  }
+  event.preventDefault();
+  await pasteValueBlock(selected.table, selected.selection, values);
+}
+
+async function pasteValueBlock(table, selection, values) {
+  if (!state.session?.session_id) {
+    showToast('No active editing session.');
+    return;
+  }
+  const startRow = selection.row_start;
+  const startCol = selection.col_start;
+  const response = await fetch(`/api/session/${state.session.session_id}/paste`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      table_id: table.table_id,
+      start_row: startRow,
+      start_col: startCol,
+      values,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showToast(data.error || 'Paste failed.');
+    return;
+  }
+  state.session = data.session || state.session;
+  state.previews[table.table_id] = data.preview || null;
+  state.tables = state.tables.map(item => (item.table_id === table.table_id ? data.table : item));
+  if (data.preview?.selection) {
+    state.selections[table.table_id] = normalizeSelection(data.preview.selection);
+    state.selectionAnchors[table.table_id] = {
+      row: data.preview.selection.row_start,
+      col: data.preview.selection.col_start,
+    };
+  }
+  updateDraftToolbar();
+  renderList();
+  showToast('Pasted values into draft.');
+}
+
 function wireEditableCard(card, table) {
   const tableId = table.table_id;
   wireEditableScope(card, table, { hasCellGrid: true });
@@ -2228,7 +2668,7 @@ async function exportDraft() {
   const response = await fetch(`/api/session/${state.session.session_id}/export-bin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ stem: stripExtension(state.files.bin?.name || 'edited-bin') }),
+    body: JSON.stringify({ stem: stripExtension(state.files.bin?.name || state.session?.source_bin_name || 'edited-bin') }),
   });
 
   if (!response.ok) {
@@ -2727,6 +3167,53 @@ function clearImportModal() {
   importText.focus();
 }
 
+function copyImportTemplate() {
+  const table = state.tables.find(item => item.table_id === state.importTableId);
+  if (!table) {
+    return copyText(AI_TABLE_IMPORT_TEMPLATE);
+  }
+  const lines = [
+    'Fill or revise this ECU calibration table and return only a TunerPro XDF Viewer import block.',
+    '',
+    'RULES',
+    '- Keep the same table shape unless I explicitly ask for different axes.',
+    '- Use Mode: values_only for normal value changes.',
+    '- Use Mode: values_and_axes only if you also change X/Y breakpoint labels.',
+    '- Return numeric values only in the Values section. Do not include explanations inside the import block.',
+    '- Preserve row and column order exactly.',
+    '',
+    'OUTPUT FORMAT',
+    '[TABLE IMPORT]',
+    `Title: ${getDisplayTitle(table)}`,
+    `Mode: ${importMode.value || 'values_only'}`,
+    '',
+  ];
+  if (Array.isArray(table.x_labels) && table.x_labels.length) {
+    lines.push('X Axis:');
+    lines.push(table.x_labels.map(formatNumber).join(','));
+    lines.push('');
+  }
+  if (Array.isArray(table.y_labels) && table.y_labels.length) {
+    lines.push('Y Axis:');
+    lines.push(table.y_labels.map(formatNumber).join(','));
+    lines.push('');
+  }
+  lines.push('Values:');
+  buildImportValueRows(table).forEach(row => lines.push(row));
+  lines.push('');
+  lines.push('REQUEST');
+  lines.push('Replace the values above with your recommended filled table, keeping the same import format.');
+  return copyText(lines.join('\n'));
+}
+
+function buildImportValueRows(table) {
+  const grid = table.grid || [];
+  if (table.type === 'constant' || (table.rows === 1 && table.cols === 1)) {
+    return [formatNumber(grid?.[0]?.[0] ?? 0)];
+  }
+  return grid.map(row => (row || []).map(formatNumber).join(','));
+}
+
 function showImportError(message) {
   importError.textContent = message;
   importError.style.display = 'block';
@@ -3046,16 +3533,62 @@ function copyForAI(table) {
   copyText(lines.join('\n'));
 }
 
-function copyText(text) {
-  navigator.clipboard.writeText(text).then(showToast).catch(() => {
+async function copyText(text) {
+  const value = String(text || '');
+  if (!value) {
+    showToast('Nothing to copy.');
+    return false;
+  }
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      showToast('Copied to this device.');
+      return true;
+    }
+  } catch (error) {
+    // Fall through to the legacy path and final manual-copy modal.
+  }
+
+  try {
     const textarea = document.createElement('textarea');
-    textarea.value = text;
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
     document.body.appendChild(textarea);
+    textarea.focus();
     textarea.select();
-    document.execCommand('copy');
+    textarea.setSelectionRange(0, textarea.value.length);
+    const copied = document.execCommand('copy');
     textarea.remove();
-    showToast();
-  });
+    if (copied) {
+      showToast('Copied to this device.');
+      return true;
+    }
+  } catch (error) {
+    // Show the modal below.
+  }
+
+  openClipboardModal(value);
+  showToast('Clipboard blocked. Select the text to copy.');
+  return false;
+}
+
+function openClipboardModal(text) {
+  clipboardText.value = String(text || '');
+  clipboardModal.style.display = 'flex';
+  selectClipboardFallbackText();
+}
+
+function closeClipboardModal() {
+  clipboardModal.style.display = 'none';
+}
+
+function selectClipboardFallbackText() {
+  clipboardText.focus();
+  clipboardText.select();
+  clipboardText.setSelectionRange(0, clipboardText.value.length);
 }
 
 function resetAll() {

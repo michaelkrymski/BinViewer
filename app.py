@@ -2,18 +2,78 @@
 TunerPro XDF/BIN Viewer Flask backend.
 """
 from io import BytesIO
+import json
+from pathlib import Path
+import secrets
 import traceback
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, redirect, render_template, request, send_file, session as flask_session, url_for
 
 from bin_reader import extract_table
 from editor_core import EditSession, SessionRegistry
 from preferences_store import load_preferences, save_preferences
+from project_store import (
+    ProjectStore,
+    build_project_export_path,
+    get_project_draft_path,
+    list_project_bins,
+    resolve_project_paths,
+    serialize_store_for_api,
+)
 from table_ranker import build_table_metadata
 from xdf_parser import XdfFormatError, parse_xdf
 
 app = Flask(__name__)
+app.secret_key = secrets.token_hex(32)
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 SESSIONS = SessionRegistry()
+PROJECTS = ProjectStore()
+LAN_ACCESS = {
+    'enabled': False,
+    'pin': '',
+    'auth_token': '',
+}
+
+
+LAN_AUTH_PAGE = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>BIN Viewer Access</title></head>
+<body style="font-family:Arial,sans-serif;max-width:420px;margin:12vh auto;padding:0 20px;color:#1f2933;">
+  <h1>Enter host PIN</h1>
+  <p>This BIN Viewer session is being hosted from the Windows tray app.</p>
+  <form method="post" action="/api/lan-auth">
+    <input name="pin" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" style="font-size:20px;padding:10px;width:100%;box-sizing:border-box;margin-bottom:12px;">
+    <button type="submit" style="font-size:16px;padding:10px 14px;">Join Session</button>
+  </form>
+</body>
+</html>"""
+
+
+def configure_lan_access(*, enabled: bool, pin: str | None = None) -> dict:
+    """Enable or disable PIN auth for non-local clients."""
+    LAN_ACCESS['enabled'] = bool(enabled)
+    LAN_ACCESS['pin'] = str(pin or '') if enabled else ''
+    LAN_ACCESS['auth_token'] = secrets.token_hex(16) if enabled else ''
+    return get_hosting_status()
+
+
+def get_hosting_status() -> dict:
+    return {
+        'lan_auth_enabled': LAN_ACCESS['enabled'],
+        'pin': LAN_ACCESS['pin'] if LAN_ACCESS['enabled'] else '',
+    }
+
+
+@app.before_request
+def require_lan_pin():
+    if not LAN_ACCESS['enabled'] or _is_local_request():
+        return None
+    if request.endpoint in {'api_lan_auth', 'static'}:
+        return None
+    if flask_session.get('lan_auth_token') == LAN_ACCESS['auth_token']:
+        return None
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'LAN PIN required'}), 401
+    return LAN_AUTH_PAGE, 401
 
 
 @app.route('/')
@@ -26,6 +86,20 @@ def compare():
     return render_template('compare.html')
 
 
+@app.route('/api/lan-auth', methods=['POST'])
+def api_lan_auth():
+    payload = request.get_json(silent=True) or {}
+    pin = str(payload.get('pin') or request.form.get('pin') or '').strip()
+    if LAN_ACCESS['enabled'] and pin == LAN_ACCESS['pin']:
+        flask_session['lan_auth_token'] = LAN_ACCESS['auth_token']
+        if request.form:
+            return redirect(url_for('index'))
+        return jsonify({'ok': True})
+    if request.form:
+        return LAN_AUTH_PAGE, 403
+    return jsonify({'error': 'Invalid PIN'}), 403
+
+
 def serialize_session(session):
     return {
         'tables': session.list_tables(),
@@ -33,6 +107,7 @@ def serialize_session(session):
         'categories': {str(k): v for k, v in session.categories_map.items()},
         'session': session.get_summary(),
         'preferences': load_preferences(),
+        'project': serialize_store_for_api(PROJECTS.load()),
     }
 
 
@@ -163,6 +238,180 @@ def api_preferences_post():
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
 
 
+@app.route('/api/project/status', methods=['GET'])
+def api_project_status():
+    store = PROJECTS.load()
+    return jsonify({
+        'project': serialize_store_for_api(store),
+        'hosting': get_hosting_status(),
+    })
+
+
+@app.route('/api/project/active', methods=['POST'])
+def api_project_active():
+    try:
+        payload = request.get_json(silent=True) or {}
+        project = PROJECTS.set_active_project(str(payload.get('project_id') or ''))
+        if not project:
+            return jsonify({'error': 'Unknown project'}), 404
+        return jsonify({'project': serialize_store_for_api(PROJECTS.load())})
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/project/bins', methods=['GET'])
+def api_project_bins():
+    project = PROJECTS.get_active_project()
+    if not project:
+        return jsonify({'error': 'No active project configured in the Windows tray app'}), 404
+    return jsonify({'bins': list_project_bins(project), 'project': serialize_store_for_api(PROJECTS.load())})
+
+
+@app.route('/api/project/bin', methods=['POST'])
+def api_project_bin():
+    try:
+        payload = request.get_json(silent=True) or {}
+        project = PROJECTS.get_active_project()
+        if not project:
+            return jsonify({'error': 'No active project configured in the Windows tray app'}), 404
+        bin_path = _resolve_project_bin_payload(project, payload.get('path'))
+        updated = PROJECTS.update_active_project({
+            'last_bin_path': str(bin_path),
+            'bin_folder': project.get('bin_folder') or str(bin_path.parent),
+        })
+        return jsonify({'project': serialize_store_for_api(PROJECTS.load()), 'active_project': updated})
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/project/parse', methods=['POST'])
+def api_project_parse():
+    try:
+        payload = request.get_json(silent=True) or {}
+        project = PROJECTS.get_active_project()
+        if not project:
+            return jsonify({'error': 'No active project configured in the Windows tray app'}), 404
+        if payload.get('bin_path'):
+            bin_path = _resolve_project_bin_payload(project, payload.get('bin_path'))
+            project = PROJECTS.update_active_project({
+                'last_bin_path': str(bin_path),
+                'bin_folder': project.get('bin_folder') or str(bin_path.parent),
+            })
+        xdf_path, bin_path = resolve_project_paths(project)
+        xdf_bytes = xdf_path.read_bytes()
+        bin_data = bin_path.read_bytes()
+        session = SESSIONS.create(
+            xdf_bytes=xdf_bytes,
+            bin_bytes=bin_data,
+            xdf_name=xdf_path.name,
+            bin_name=bin_path.name,
+        )
+        return jsonify(serialize_session(session))
+    except XdfFormatError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/project/draft/save', methods=['POST'])
+def api_project_draft_save():
+    try:
+        payload = request.get_json(silent=True) or {}
+        session = SESSIONS.get(payload.get('session_id', ''))
+        project = PROJECTS.get_active_project()
+        if not project:
+            return jsonify({'error': 'No active project configured in the Windows tray app'}), 404
+        draft_path = get_project_draft_path(project)
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        draft_path.write_text(json.dumps(session.to_payload(), indent=2), encoding='utf-8')
+        PROJECTS.update_active_project({'draft_path': str(draft_path)})
+        return jsonify({
+            'draft_path': str(draft_path),
+            'session': session.get_summary(),
+            'project': serialize_store_for_api(PROJECTS.load()),
+        })
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/project/draft/restore', methods=['POST'])
+def api_project_draft_restore():
+    try:
+        project = PROJECTS.get_active_project()
+        if not project:
+            return jsonify({'error': 'No active project configured in the Windows tray app'}), 404
+        draft_path = get_project_draft_path(project)
+        if not draft_path.exists():
+            return jsonify({'error': 'No project draft has been saved yet'}), 404
+        session = EditSession.from_payload(json.loads(draft_path.read_text(encoding='utf-8')))
+        SESSIONS.store(session)
+        return jsonify(serialize_session(session))
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/project/save-mode', methods=['POST'])
+def api_project_save_mode():
+    try:
+        payload = request.get_json(silent=True) or {}
+        mode = payload.get('remote_save_mode')
+        if mode not in {'new_revision', 'small_edit'}:
+            return jsonify({'error': 'remote_save_mode must be new_revision or small_edit'}), 400
+        PROJECTS.update_active_project({'remote_save_mode': mode})
+        return jsonify({'project': serialize_store_for_api(PROJECTS.load())})
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/project/export', methods=['POST'])
+def api_project_export():
+    try:
+        payload = request.get_json(silent=True) or {}
+        session = SESSIONS.get(payload.get('session_id', ''))
+        project = PROJECTS.get_active_project()
+        if not project:
+            return jsonify({'error': 'No active project configured in the Windows tray app'}), 404
+        output_path, metadata = build_project_export_path(
+            project,
+            source_bin_name=session.source_bin_name,
+            description=payload.get('description') if 'description' in payload else None,
+        )
+        result = session.export_bin_and_log(output_path, log_dir=project.get('log_folder') or None)
+        PROJECTS.update_active_project({
+            'last_bin_path': str(output_path),
+            'bin_folder': project.get('bin_folder') or str(output_path.parent),
+            'output_folder': str(output_path.parent),
+            'revision_prefix': metadata['revision_prefix'],
+            'revision_number': metadata['next_revision_number'],
+            'small_edit_output_path': metadata['small_edit_output_path'],
+        })
+        if payload.get('download', True) is False:
+            return jsonify({
+                'filename': Path(result['bin_path']).name,
+                'export_path': result['bin_path'],
+                'log_path': result['log_path'],
+                'remote_save_mode': metadata['mode'],
+                'project': serialize_store_for_api(PROJECTS.load()),
+                'session': result['session'],
+            })
+        response = send_file(
+            BytesIO(Path(result['bin_path']).read_bytes()),
+            mimetype='application/octet-stream',
+            as_attachment=True,
+            download_name=Path(result['bin_path']).name,
+        )
+        response.headers['X-Export-Path'] = result['bin_path']
+        response.headers['X-Export-Log-Path'] = result['log_path']
+        response.headers['X-Remote-Save-Mode'] = metadata['mode']
+        return response
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
 @app.route('/api/compare', methods=['POST'])
 def api_compare():
     try:
@@ -273,6 +522,24 @@ def api_session_axis(session_id):
         result = session.apply_axis_edit(
             payload.get('table_id', ''),
             payload.get('axis', ''),
+            payload.get('values') or [],
+        )
+        return jsonify(result)
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/session/<session_id>/paste', methods=['POST'])
+def api_session_paste(session_id):
+    try:
+        session = SESSIONS.get(session_id)
+        payload = request.get_json(silent=True) or {}
+        result = session.paste_values(
+            payload.get('table_id', ''),
+            payload.get('start_row', 0),
+            payload.get('start_col', 0),
             payload.get('values') or [],
         )
         return jsonify(result)
@@ -483,6 +750,26 @@ def _make_raw_range(base_bytes: bytes, compare_bytes: bytes, start: int, end: in
         'context_before_hex': base_bytes[max(0, start - 8):start].hex(),
         'context_after_hex': compare_bytes[end:min(len(compare_bytes), end + 8)].hex(),
     }
+
+
+def _is_local_request() -> bool:
+    remote = (request.remote_addr or '').split('%')[0]
+    return remote in {'127.0.0.1', '::1', 'localhost'} or remote.startswith('127.')
+
+
+def _resolve_project_bin_payload(project: dict, value: str | None) -> Path:
+    bin_path = Path(str(value or '')).expanduser()
+    if not bin_path.exists() or not bin_path.is_file():
+        raise FileNotFoundError('BIN path is missing or invalid')
+    bin_folder = project.get('bin_folder')
+    if bin_folder:
+        root = Path(bin_folder).expanduser().resolve()
+        resolved = bin_path.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError('BIN path must be inside the active project BIN folder') from exc
+    return bin_path
 
 
 if __name__ == '__main__':
