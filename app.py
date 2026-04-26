@@ -10,6 +10,7 @@ from flask import Flask, jsonify, redirect, render_template, request, send_file,
 
 from bin_reader import extract_table
 from editor_core import EditSession, SessionRegistry
+from log_overlay import build_log_overlay, infer_axis_mapping, parse_log_csv
 from preferences_store import load_preferences, save_preferences
 from project_store import (
     ProjectStore,
@@ -26,6 +27,7 @@ app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 SESSIONS = SessionRegistry()
+SESSION_LOGS: dict[str, dict] = {}
 PROJECTS = ProjectStore()
 LAN_ACCESS = {
     'enabled': False,
@@ -101,12 +103,14 @@ def api_lan_auth():
 
 
 def serialize_session(session):
+    log_state = SESSION_LOGS.get(session.id)
     return {
         'tables': session.list_tables(),
         'count': len(session.bindings),
         'categories': {str(k): v for k, v in session.categories_map.items()},
         'session': session.get_summary(),
         'preferences': load_preferences(),
+        'log': _serialize_log_state(log_state) if log_state else None,
         'project': serialize_store_for_api(PROJECTS.load()),
     }
 
@@ -458,6 +462,66 @@ def api_compare():
         return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 500
 
 
+@app.route('/api/log/parse', methods=['POST'])
+def api_log_parse():
+    try:
+        session_id = str(request.form.get('session_id') or request.args.get('session_id') or '').strip()
+        if not session_id:
+            return jsonify({'error': 'session_id is required'}), 400
+        session = SESSIONS.get(session_id)
+        log_file = request.files.get('log')
+        if not log_file:
+            return jsonify({'error': 'CSV log file is required'}), 400
+        log_data = parse_log_csv(log_file.read(), filename=log_file.filename or 'log.csv')
+        SESSION_LOGS[session.id] = log_data
+        return jsonify({
+            'log': _serialize_log_state(log_data),
+            'session': session.get_summary(),
+            'preferences': load_preferences(),
+        })
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
+@app.route('/api/log/overlay', methods=['POST'])
+def api_log_overlay():
+    try:
+        payload = request.get_json(silent=True) or {}
+        session_id = str(payload.get('session_id') or '').strip()
+        table_id = str(payload.get('table_id') or '').strip()
+        if not session_id or not table_id:
+            return jsonify({'error': 'session_id and table_id are required'}), 400
+        session = SESSIONS.get(session_id)
+        log_data = SESSION_LOGS.get(session_id)
+        if not log_data:
+            return jsonify({'error': 'No CSV log is loaded for this session'}), 404
+        table = session.get_table(table_id)
+        mapping = payload.get('mapping') or {}
+        saved_mapping = ((load_preferences().get('log') or {}).get('axis_mappings') or {}).get(table.get('family_key') or '', {})
+        resolved_mapping = infer_axis_mapping(table, log_data, saved_mapping)
+        resolved_mapping.update({key: value for key, value in mapping.items() if value is not None})
+        overlay = build_log_overlay(
+            log_data,
+            table,
+            resolved_mapping,
+            sample_index=payload.get('sample_index', 0),
+            start_index=payload.get('range_start'),
+            end_index=payload.get('range_end'),
+            trace_columns=payload.get('trace_columns') or [],
+        )
+        return jsonify({
+            'overlay': overlay,
+            'mapping': resolved_mapping,
+            'session': session.get_summary(),
+        })
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc), 'traceback': traceback.format_exc()}), 400
+
+
 @app.route('/api/session/<session_id>', methods=['GET'])
 def api_session_summary(session_id):
     try:
@@ -749,6 +813,20 @@ def _make_raw_range(base_bytes: bytes, compare_bytes: bytes, start: int, end: in
         'after_hex': compare_bytes[start:end].hex(),
         'context_before_hex': base_bytes[max(0, start - 8):start].hex(),
         'context_after_hex': compare_bytes[end:min(len(compare_bytes), end + 8)].hex(),
+    }
+
+
+def _serialize_log_state(log_data: dict) -> dict:
+    return {
+        'log_id': log_data.get('log_id'),
+        'filename': log_data.get('filename'),
+        'metadata': log_data.get('metadata', {}),
+        'header': log_data.get('header', []),
+        'time_column': log_data.get('time_column'),
+        'sample_count': log_data.get('sample_count', 0),
+        'time_range': log_data.get('time_range', {}),
+        'column_stats': log_data.get('column_stats', {}),
+        'initial_traces': log_data.get('initial_traces', []),
     }
 
 

@@ -37,7 +37,7 @@ function saveEditorPrefs() {
 }
 
 const state = {
-  files: { xdf: null, bin: null },
+  files: { xdf: null, bin: null, log: null },
   tables: [],
   categories: {},
   search: '',
@@ -52,7 +52,7 @@ const state = {
   previews: {},
   editorForms: {},
   axisDrafts: {},
-  preferences: { favorites: { tables: [], families: [] }, folders: [], assignments: {} },
+  preferences: { favorites: { tables: [], families: [] }, folders: [], assignments: {}, log: { axis_mappings: {}, graph: { enabled_columns: [] }, playback_speed: 1 } },
   editingFolderId: null,
   quickAddFolderId: null,
   quickAddAssignments: new Set(),
@@ -68,6 +68,16 @@ const state = {
   project: null,
   projectBins: [],
   tableClipboard: null,
+  log: null,
+  logOverlay: null,
+  logPlayback: {
+    sampleIndex: 0,
+    rangeStart: 0,
+    rangeEnd: 0,
+    speed: 1,
+    playing: false,
+    timer: null,
+  },
 };
 
 const AI_CONTEXT_PROMPT = `You are an expert automotive ECU tuning assistant. I will share ECU calibration data copied from TunerPro XDF Viewer.
@@ -150,6 +160,7 @@ const progressBar = $('progress-bar');
 const progressFill = $('progress-fill');
 const uploadError = $('upload-error');
 const btnParse = $('btn-parse');
+const btnParseLog = $('btn-parse-log');
 const btnDebug = $('btn-debug');
 const btnHideAutogen = $('btn-hide-autogen');
 const btnCollapseAll = $('btn-collapse-all');
@@ -222,6 +233,7 @@ const clipboardText = $('clipboard-text');
 const btnClipboardClose = $('clipboard-close');
 const btnClipboardCopy = $('clipboard-copy');
 const btnClipboardSelect = $('clipboard-select');
+const workspaceLogbar = $('workspace-logbar');
 
 let debugTables = [];
 let dragSelection = null;
@@ -255,9 +267,12 @@ function init() {
 }
 
 function wireDropZones() {
-  ['xdf', 'bin'].forEach(key => {
+  ['xdf', 'bin', 'log'].forEach(key => {
     const zone = $(`drop-${key}`);
     const input = $(`input-${key}`);
+    if (!zone || !input) {
+      return;
+    }
 
     zone.addEventListener('click', event => {
       if (!event.target.closest('label')) {
@@ -290,6 +305,9 @@ function wireDropZones() {
 
 function wireToolbar() {
   btnParse.addEventListener('click', doParse);
+  if (btnParseLog) {
+    btnParseLog.addEventListener('click', parseLogFile);
+  }
   btnDebug.addEventListener('click', doDebug);
   btnNewFiles.addEventListener('click', resetAll);
 
@@ -427,10 +445,16 @@ function setFile(key, file) {
   $(`drop-${key}`).classList.add('has-file');
   hideError();
   updateParseBtn();
+  if (key === 'log' && state.session?.session_id) {
+    parseLogFile();
+  }
 }
 
 function updateParseBtn() {
   btnParse.disabled = !(state.files.xdf && state.files.bin);
+  if (btnParseLog) {
+    btnParseLog.disabled = !(state.files.log && state.session?.session_id);
+  }
   btnDebug.disabled = !state.files.xdf;
 }
 
@@ -465,6 +489,9 @@ async function doParse() {
     }
 
     applySessionPayload(data);
+    if (state.files.log) {
+      await parseLogFile({ silent: true });
+    }
 
     setTimeout(() => {
       showProgress(false);
@@ -488,6 +515,9 @@ function applySessionPayload(data) {
   state.editorForms = {};
   state.axisDrafts = {};
   state.selectedTableId = null;
+  state.log = data.log || null;
+  state.logOverlay = null;
+  stopLogPlayback();
   if (data.preferences) {
     state.preferences = normalizePreferences(data.preferences);
   }
@@ -495,6 +525,7 @@ function applySessionPayload(data) {
     state.project = data.project;
     renderProjectPanel();
   }
+  syncLogPlaybackPrefs();
 }
 
 async function doDebug() {
@@ -637,6 +668,9 @@ async function parseProjectBin() {
       throw new Error(data.error || 'Project load failed.');
     }
     applySessionPayload(data);
+    if (state.files.log) {
+      await parseLogFile({ silent: true });
+    }
     setProjectFileStatus();
     showProgress(false);
     renderResults();
@@ -677,6 +711,9 @@ async function restoreProjectDraft() {
     return;
   }
   applySessionPayload(data);
+  if (state.files.log) {
+    await parseLogFile({ silent: true });
+  }
   setProjectFileStatus();
   renderResults();
   showToast('Project draft restored.');
@@ -776,7 +813,7 @@ function renderResults() {
   resultsArea.style.display = '';
   const loaded = Boolean(state.tables.length && (state.session || (state.files.xdf && state.files.bin)));
   headerMeta.textContent = loaded
-    ? `${state.session?.source_xdf_name || state.files.xdf?.name || ''} · ${state.session?.source_bin_name || state.files.bin?.name || ''} · ${state.tables.length} definitions`
+    ? `${state.session?.source_xdf_name || state.files.xdf?.name || ''} · ${state.session?.source_bin_name || state.files.bin?.name || ''}${state.log?.filename ? ` · ${state.log.filename}` : ''} · ${state.tables.length} definitions`
     : 'No files loaded';
   viewModeSelect.value = state.viewMode;
   if (!state.selectedCategory) {
@@ -784,6 +821,7 @@ function renderResults() {
   }
   updateDraftToolbar();
   renderFolderList();
+  renderLogWorkspaceBar();
   renderList();
 }
 
@@ -804,12 +842,14 @@ function renderList() {
   renderFolderList();
 
   if (!state.tables.length) {
+    renderLogWorkspaceBar();
     renderInspector();
     return;
   }
 
   if (!visible.length) {
     tableList.innerHTML = '<div class="no-results"><div>No tables match your filter.</div></div>';
+    renderLogWorkspaceBar();
     renderInspector();
     return;
   }
@@ -817,6 +857,7 @@ function renderList() {
   if (state.viewMode === 'flat') {
     renderFlatView(visible);
     ensureSelectedTable(visible);
+    renderLogWorkspaceBar();
     renderInspector(visible);
     return;
   }
@@ -824,11 +865,13 @@ function renderList() {
   if (state.viewMode === 'hierarchy') {
     renderHierarchyView(visible);
     ensureSelectedTable(visible);
+    renderLogWorkspaceBar();
     renderInspector(visible);
     return;
   }
 
   renderWorkflowView(visible);
+  renderLogWorkspaceBar();
   renderInspector(visible);
 }
 
@@ -955,6 +998,9 @@ function switchToMap(mapLabel, tables = state.tables) {
     state.selectedCategory = null;
   }
   renderList();
+  if (hasActiveLog()) {
+    refreshLogOverlay().then(() => renderResults());
+  }
 }
 
 function findSiblingTableForMap(table, mapLabel, tables = state.tables) {
@@ -1217,6 +1263,9 @@ function selectTable(tableId) {
   }
   btnToggleFavorite.disabled = !state.selectedTableId;
   renderList();
+  if (hasActiveLog()) {
+    refreshLogOverlay().then(() => renderResults());
+  }
 }
 
 function updateDraftToolbar() {
@@ -1574,6 +1623,334 @@ function findRepresentative(tables) {
   return tables.slice().sort(compareTables)[0];
 }
 
+function hasActiveLog() {
+  return Boolean(state.log && state.session?.session_id);
+}
+
+function getLogPrefs() {
+  return state.preferences.log || { axis_mappings: {}, graph: { enabled_columns: [] }, playback_speed: 1 };
+}
+
+function syncLogPlaybackPrefs() {
+  const prefs = getLogPrefs();
+  const speed = Number(prefs.playback_speed);
+  state.logPlayback.speed = Number.isFinite(speed) && speed > 0 ? speed : 1;
+}
+
+function stopLogPlayback() {
+  if (state.logPlayback.timer) {
+    window.clearInterval(state.logPlayback.timer);
+    state.logPlayback.timer = null;
+  }
+  state.logPlayback.playing = false;
+}
+
+function renderLogWorkspaceBar() {
+  if (!workspaceLogbar) {
+    return;
+  }
+  if (!hasActiveLog()) {
+    workspaceLogbar.style.display = 'none';
+    workspaceLogbar.innerHTML = '';
+    return;
+  }
+  const selected = state.tables.find(item => item.table_id === state.selectedTableId);
+  const activeIndex = clampLogSampleIndex(state.logPlayback.sampleIndex);
+  const maxIndex = Math.max((state.log?.sample_count || 1) - 1, 0);
+  const overlaySummary = state.logOverlay?.summary
+    ? `${state.logOverlay.mapped_sample_count} mapped · ${state.logOverlay.unmapped_sample_count} unmapped`
+    : `${state.log?.sample_count || 0} samples`;
+  workspaceLogbar.style.display = '';
+  workspaceLogbar.innerHTML = `
+    <div class="logbar">
+      <div class="logbar__meta">
+        <div class="logbar__title">Log Overlay</div>
+        <div class="logbar__copy">${escapeHtml(state.log.filename || 'CSV log')} · ${overlaySummary}</div>
+      </div>
+      <div class="logbar__controls">
+        <button class="btn btn-ghost btn-sm" id="log-step-back" ${activeIndex <= 0 ? 'disabled' : ''}>Prev</button>
+        <button class="btn btn-primary btn-sm" id="log-play-toggle">${state.logPlayback.playing ? 'Pause' : 'Play'}</button>
+        <button class="btn btn-ghost btn-sm" id="log-step-forward" ${activeIndex >= maxIndex ? 'disabled' : ''}>Next</button>
+        <input id="log-scrubber" class="logbar__scrubber" type="range" min="0" max="${maxIndex}" step="1" value="${activeIndex}" />
+        <label class="logbar__speed">
+          <span>Speed</span>
+          <select id="log-speed">
+            ${[0.25, 0.5, 1, 2, 4, 8].map(value => `<option value="${value}"${Number(value) === Number(state.logPlayback.speed) ? ' selected' : ''}>${value}x</option>`).join('')}
+          </select>
+        </label>
+        <span class="logbar__time">${formatLogTime(state.logOverlay?.current_sample_time ?? state.log?.time_range?.start ?? 0)}</span>
+      </div>
+      <div class="logbar__table">${selected ? escapeHtml(getDisplayTitle(selected)) : 'Select a table to overlay the log'}</div>
+    </div>`;
+
+  $('log-play-toggle')?.addEventListener('click', toggleLogPlayback);
+  $('log-step-back')?.addEventListener('click', () => stepLogSample(-1));
+  $('log-step-forward')?.addEventListener('click', () => stepLogSample(1));
+  $('log-scrubber')?.addEventListener('input', async event => {
+    state.logPlayback.sampleIndex = clampLogSampleIndex(Number(event.target.value));
+    await refreshLogOverlay();
+    renderResults();
+  });
+  $('log-speed')?.addEventListener('change', async event => {
+    state.logPlayback.speed = Number(event.target.value) || 1;
+    if (!state.preferences.log) {
+      state.preferences.log = getLogPrefs();
+    }
+    state.preferences.log.playback_speed = state.logPlayback.speed;
+    await savePreferences();
+    if (state.logPlayback.playing) {
+      stopLogPlayback();
+      toggleLogPlayback();
+    }
+  });
+}
+
+function clampLogSampleIndex(value) {
+  const maxIndex = Math.max((state.log?.sample_count || 1) - 1, 0);
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(maxIndex, Math.round(numeric)));
+}
+
+function formatLogTime(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? `${numeric.toFixed(3)}s` : '0.000s';
+}
+
+async function toggleLogPlayback() {
+  if (!hasActiveLog()) {
+    return;
+  }
+  if (state.logPlayback.playing) {
+    stopLogPlayback();
+    renderResults();
+    return;
+  }
+  const delay = Math.max(30, Math.round(160 / Math.max(state.logPlayback.speed, 0.25)));
+  state.logPlayback.playing = true;
+  state.logPlayback.timer = window.setInterval(async () => {
+    if (state.logPlayback.sampleIndex >= Math.max((state.log?.sample_count || 1) - 1, 0)) {
+      stopLogPlayback();
+      renderResults();
+      return;
+    }
+    state.logPlayback.sampleIndex = clampLogSampleIndex(state.logPlayback.sampleIndex + 1);
+    await refreshLogOverlay();
+    renderResults();
+  }, delay);
+  renderResults();
+}
+
+async function stepLogSample(delta) {
+  state.logPlayback.sampleIndex = clampLogSampleIndex((state.logPlayback.sampleIndex || 0) + delta);
+  await refreshLogOverlay();
+  renderResults();
+}
+
+async function parseLogFile(options = {}) {
+  const silent = Boolean(options.silent);
+  if (!state.files.log || !state.session?.session_id) {
+    return;
+  }
+  const formData = new FormData();
+  formData.append('session_id', state.session.session_id);
+  formData.append('log', state.files.log);
+  try {
+    const response = await fetch('/api/log/parse', { method: 'POST', body: formData });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Could not parse CSV log.');
+    }
+    state.log = data.log || null;
+    state.logOverlay = null;
+    state.logPlayback.sampleIndex = 0;
+    state.logPlayback.rangeStart = 0;
+    state.logPlayback.rangeEnd = Math.max((state.log?.sample_count || 1) - 1, 0);
+    syncLogPlaybackPrefs();
+    const enabled = getEnabledGraphColumns();
+    if (!enabled.length && state.log?.initial_traces?.length) {
+      state.preferences.log = getLogPrefs();
+      state.preferences.log.graph.enabled_columns = [...state.log.initial_traces];
+      await savePreferences();
+    }
+    await refreshLogOverlay();
+    renderResults();
+    if (!silent) {
+      showToast(`Loaded log CSV: ${state.log.filename}`);
+    }
+  } catch (error) {
+    if (!silent) {
+      showToast(error.message || 'Could not parse CSV log.');
+    }
+  }
+}
+
+function getEnabledGraphColumns() {
+  return [...(((state.preferences.log || {}).graph || {}).enabled_columns || [])];
+}
+
+function resolveLogMapping(table) {
+  const prefs = getLogPrefs();
+  const saved = (prefs.axis_mappings || {})[getFamilyPreferenceKey(table)] || {};
+  const mapping = {
+    x_column: saved.x_column || '',
+    y_column: saved.y_column || '',
+    map_column: saved.map_column || '',
+  };
+  if (!mapping.x_column || !mapping.y_column) {
+    const inferred = inferLogMapping(table);
+    mapping.x_column = mapping.x_column || inferred.x_column;
+    mapping.y_column = mapping.y_column || inferred.y_column;
+    mapping.map_column = mapping.map_column || inferred.map_column;
+  }
+  return mapping;
+}
+
+function inferLogMapping(table) {
+  const columns = state.log?.header || [];
+  const title = String(table.title || '').toLowerCase();
+  const family = String(table.family_title || '').toLowerCase();
+  const bucket = String(table.workflow_bucket || '').toLowerCase();
+  const xStats = getAxisLabelStats(table.x_labels || []);
+  const yStats = getAxisLabelStats(table.y_labels || []);
+  const find = candidates => {
+    const normalized = columns.map(column => ({ original: column, normalized: normalizeText(column) }));
+    for (const candidate of candidates) {
+      const direct = normalized.find(entry => entry.normalized === normalizeText(candidate));
+      if (direct) return direct.original;
+    }
+    for (const candidate of candidates) {
+      const partial = normalized.find(entry => entry.normalized.includes(normalizeText(candidate)));
+      if (partial) return partial.original;
+    }
+    return '';
+  };
+  let xColumn = '';
+  let yColumn = '';
+  if (looksLikeGearAxis(xStats) && looksLikeRpmAxis(yStats)) {
+    xColumn = find(['Gear (-)', 'Gear']);
+    yColumn = find(['RPM (rpm)', 'RPM']);
+  } else if (looksLikeRpmAxis(xStats) && looksLikeLoadAxis(yStats)) {
+    xColumn = find(['RPM (rpm)', 'RPM']);
+    yColumn = find(['Load actual RAM', 'Load req. (%)', 'Load req.']);
+  } else if (looksLikeRpmAxis(yStats) && looksLikeLoadAxis(xStats)) {
+    xColumn = find(['Load actual RAM', 'Load req. (%)', 'Load req.']);
+    yColumn = find(['RPM (rpm)', 'RPM']);
+  } else if (title.includes('gear')) {
+    xColumn = find(['Gear (-)', 'Gear']);
+    yColumn = find(['RPM (rpm)', 'RPM']);
+  } else {
+    xColumn = find(['RPM (rpm)', 'RPM']);
+    if (title.includes('ethanol') || title.includes('interpolation')) {
+      xColumn = find(['Fuel Interpolation (-)', 'Fuel Scalar Interpolation (-)', 'Ethanol Content']);
+    }
+    if (title.includes('gear x rpm')) {
+      xColumn = find(['Gear (-)', 'Gear']);
+      yColumn = find(['RPM (rpm)', 'RPM']);
+    }
+  }
+  if (!yColumn) {
+    if (title.includes('gear x rpm')) {
+      yColumn = find(['RPM (rpm)', 'RPM']);
+    } else if (title.includes('gear')) {
+      yColumn = find(['RPM (rpm)', 'RPM']);
+    } else if (title.includes('ethanol')) {
+      yColumn = find(['Load actual RAM', 'Load req. (%)']);
+    } else if (bucket.includes('fuel') || bucket.includes('ignition') || bucket.includes('boost') || family.includes('fuel') || family.includes('timing') || family.includes('wgdc')) {
+      yColumn = find(['Load actual RAM', 'Load req. (%)', 'Load req.']);
+    }
+  }
+  const mapColumn = find(['Current Map (-)', 'Current Map']);
+  return { x_column: xColumn, y_column: yColumn, map_column: mapColumn };
+}
+
+function getAxisLabelStats(labels) {
+  const values = (labels || []).map(Number).filter(Number.isFinite);
+  if (!values.length) {
+    return { min: null, max: null };
+  }
+  return { min: Math.min(...values), max: Math.max(...values) };
+}
+
+function looksLikeRpmAxis(stats) {
+  return Number.isFinite(stats?.max) && Number(stats.max) >= 400;
+}
+
+function looksLikeLoadAxis(stats) {
+  return Number.isFinite(stats?.max) && Number(stats.max) >= 5 && Number(stats.max) <= 350;
+}
+
+function looksLikeGearAxis(stats) {
+  return Number.isFinite(stats?.max) && Number(stats.max) <= 12;
+}
+
+async function updateLogMapping(table, field, value) {
+  state.preferences.log = getLogPrefs();
+  const familyKey = getFamilyPreferenceKey(table);
+  if (!state.preferences.log.axis_mappings[familyKey]) {
+    state.preferences.log.axis_mappings[familyKey] = {};
+  }
+  state.preferences.log.axis_mappings[familyKey][field] = value;
+  await savePreferences();
+  await refreshLogOverlay();
+  renderResults();
+}
+
+async function toggleGraphColumn(column, enabled) {
+  state.preferences.log = getLogPrefs();
+  const current = new Set(getEnabledGraphColumns());
+  if (enabled) {
+    current.add(column);
+  } else {
+    current.delete(column);
+  }
+  state.preferences.log.graph.enabled_columns = Array.from(current);
+  await savePreferences();
+  await refreshLogOverlay();
+  renderResults();
+}
+
+async function refreshLogOverlay() {
+  if (!hasActiveLog() || !state.selectedTableId) {
+    state.logOverlay = null;
+    return;
+  }
+  const table = state.tables.find(item => item.table_id === state.selectedTableId);
+  if (!table || !table.rows || !table.cols) {
+    state.logOverlay = null;
+    return;
+  }
+  const mapping = resolveLogMapping(table);
+  const needsX = Number(table.cols || 0) > 1;
+  const needsY = Number(table.rows || 0) > 1;
+  if ((needsX && !mapping.x_column) || (needsY && !mapping.y_column)) {
+    state.logOverlay = { error: 'Select the required log axis columns for this table.', mapping };
+    return;
+  }
+  const response = await fetch('/api/log/overlay', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: state.session.session_id,
+      table_id: table.table_id,
+      sample_index: clampLogSampleIndex(state.logPlayback.sampleIndex),
+      range_start: state.logPlayback.rangeStart,
+      range_end: state.logPlayback.rangeEnd,
+      mapping,
+      trace_columns: getEnabledGraphColumns(),
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    state.logOverlay = { error: data.error || 'Could not build log overlay.', mapping };
+    return;
+  }
+  state.logOverlay = data.overlay;
+  state.logOverlay.mapping = data.mapping;
+}
+
 function buildCard(table, { titleOverride = null } = {}) {
   const card = document.createElement('article');
   const shouldBeOpen = shouldOpen('cards', table.table_id, false);
@@ -1642,6 +2019,13 @@ function buildCard(table, { titleOverride = null } = {}) {
     openImportModal(table.table_id);
   });
 
+  card.querySelectorAll('[data-log-mapping]').forEach(select => {
+    select.addEventListener('change', async event => {
+      event.stopPropagation();
+      await updateLogMapping(table, event.target.dataset.logMapping, event.target.value);
+    });
+  });
+
   if (table.editable && !table.error) {
     wireEditableCard(card, table);
   }
@@ -1703,8 +2087,10 @@ function renderInspector(visibleTables = []) {
     ? `<div class="desc-long">${escapeHtml((selected.primary_category_path || []).join(' > '))}</div>`
     : '';
   const favoriteFolders = getAssignedFoldersMarkup(selected);
+  const graphMarkup = buildLogGraphSection(selected);
 
   inspectorBody.innerHTML = `
+    ${graphMarkup ? `<section class="inspector-section inspector-section--graph"><div class="inspector-section__title">Log Graph</div>${graphMarkup}</section>` : ''}
     <section class="inspector-section">
       <div class="inspector-section__title">Description</div>
       ${descriptionMarkup}
@@ -1727,6 +2113,11 @@ function renderInspector(visibleTables = []) {
   inspectorHeader.querySelector('.inspector-copy').addEventListener('click', () => copyForAI(selected));
   inspectorHeader.querySelector('.inspector-meta').addEventListener('click', () => openMetadataModal(selected.table_id));
   inspectorHeader.querySelector('.inspector-favorite').addEventListener('click', () => toggleFavoriteForTable(selected));
+  inspectorBody.querySelectorAll('[data-graph-column]').forEach(input => {
+    input.addEventListener('change', async event => {
+      await toggleGraphColumn(event.target.dataset.graphColumn, event.target.checked);
+    });
+  });
   wireEditableScope(inspectorPanel, selected, { hasCellGrid: false });
 }
 
@@ -1797,9 +2188,91 @@ function buildBody(table, { includeAxisEditors = true } = {}) {
     return '<div class="card-error-msg">No data extracted.</div>';
   }
   if (isScalarTable(table)) {
-    return `${buildInlineEditorBar(table)}${buildScalar(table)}`;
+    return `${buildInlineEditorBar(table)}${buildLogOverlayBar(table)}${buildScalar(table)}`;
   }
-  return `${buildInlineEditorBar(table)}${buildTable(table)}`;
+  return `${buildInlineEditorBar(table)}${buildLogOverlayBar(table)}${buildTable(table)}`;
+}
+
+function buildLogGraphSection(table) {
+  if (!hasActiveLog()) {
+    return '';
+  }
+  if (state.logOverlay?.error) {
+    return `<div class="desc-short">${escapeHtml(state.logOverlay.error)}</div>`;
+  }
+  const graph = state.logOverlay?.graph;
+  if (!graph || !Array.isArray(graph.series) || !graph.series.length) {
+    return '<div class="desc-short">Pick graph traces to see the loaded CSV log plotted here.</div>';
+  }
+  const toggles = buildGraphToggleMarkup();
+  const chart = buildLogChartSvg(graph);
+  return `
+    <div class="log-graph">
+      <div class="log-graph__toggles">${toggles}</div>
+      <div class="log-graph__chart">${chart}</div>
+    </div>`;
+}
+
+function buildGraphToggleMarkup() {
+  const columns = state.log?.header || [];
+  const enabled = new Set(getEnabledGraphColumns());
+  const preferred = new Set([...(state.log?.initial_traces || []), ...(enabled || [])]);
+  const options = columns.filter(column => preferred.has(column)).concat(columns.filter(column => !preferred.has(column))).slice(0, 14);
+  return options.map(column => `
+    <label class="graph-toggle">
+      <input type="checkbox" data-graph-column="${escapeHtml(column)}" ${enabled.has(column) ? 'checked' : ''} />
+      <span>${escapeHtml(column)}</span>
+    </label>
+  `).join('');
+}
+
+function buildLogChartSvg(graph) {
+  const width = 300;
+  const height = 180;
+  const padding = { top: 10, right: 10, bottom: 18, left: 10 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const timeValues = graph.times || [];
+  if (!timeValues.length) {
+    return '<div class="desc-short">No plottable log samples in the current range.</div>';
+  }
+  const timeMin = Math.min(...timeValues);
+  const timeMax = Math.max(...timeValues);
+  const colors = ['#7dd3fc', '#a78bfa', '#f59e0b', '#34d399', '#f87171', '#f472b6', '#facc15'];
+  const lines = graph.series.map((series, index) => {
+    const numericValues = series.values.filter(value => Number.isFinite(value));
+    if (!numericValues.length || series.min === null || series.max === null) {
+      return '';
+    }
+    const range = series.max - series.min || 1;
+    const points = [];
+    series.values.forEach((value, pointIndex) => {
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const x = padding.left + (((timeValues[pointIndex] - timeMin) / Math.max(timeMax - timeMin, 0.0001)) * plotWidth);
+      const y = padding.top + (plotHeight - (((value - series.min) / range) * plotHeight));
+      points.push(`${x.toFixed(2)},${y.toFixed(2)}`);
+    });
+    if (points.length < 2) {
+      return '';
+    }
+    return `<polyline fill="none" stroke="${colors[index % colors.length]}" stroke-width="2" points="${points.join(' ')}" />`;
+  }).join('');
+
+  let cursorLine = '';
+  const overlayTime = Number(state.logOverlay?.current_sample_time);
+  if (Number.isFinite(overlayTime)) {
+    const cursorX = padding.left + (((overlayTime - timeMin) / Math.max(timeMax - timeMin, 0.0001)) * plotWidth);
+    cursorLine = `<line x1="${cursorX.toFixed(2)}" x2="${cursorX.toFixed(2)}" y1="${padding.top}" y2="${padding.top + plotHeight}" stroke="rgba(248,250,252,0.8)" stroke-dasharray="4 4" />`;
+  }
+
+  return `
+    <svg class="log-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Log chart">
+      <rect x="${padding.left}" y="${padding.top}" width="${plotWidth}" height="${plotHeight}" rx="10" fill="rgba(15,23,42,0.6)" stroke="rgba(148,163,184,0.14)" />
+      ${cursorLine}
+      ${lines}
+    </svg>`;
 }
 
 function buildInlineEditorBar(table) {
@@ -1817,6 +2290,7 @@ function buildScalar(table) {
   const second = table.has_diff ? formatNumber(table.grid2?.[0]?.[0] ?? 0) : null;
   const selected = selectionContains(state.selections[table.table_id], 0, 0);
   const scalarClasses = ['scalar-display', 'scalar-display--editable'];
+  if (isActiveLogCell(table, 0, 0)) scalarClasses.push('is-log-active');
   if (selected) scalarClasses.push('is-selected');
   if (previewCell) scalarClasses.push('is-preview');
   if (second === null || first === second) {
@@ -1850,6 +2324,13 @@ function buildTable(table) {
       const current = formatNumber(displayValue);
       const cellClasses = ['table-cell'];
       const heatmapStyle = buildHeatmapStyle(table, row, col);
+      if (isActiveLogCell(table, row, col)) {
+        cellClasses.push('is-log-active');
+      }
+      const dwellRatio = getLogDwellRatio(table, row, col);
+      if (dwellRatio > 0) {
+        cellClasses.push('has-log-dwell');
+      }
       if (selectionContains(selection, row, col)) {
         cellClasses.push('is-selected');
         cellClasses.push(...selectionEdgeClasses(selection, row, col));
@@ -1905,6 +2386,59 @@ function buildAxisEditors(table) {
       </div>
       ${xEditor ? `<div class="axis-editor-panel${activeAxis === 'x' ? ' is-active' : ''}" data-axis-panel="x">${xEditor}</div>` : ''}
       ${yEditor ? `<div class="axis-editor-panel${activeAxis === 'y' ? ' is-active' : ''}" data-axis-panel="y">${yEditor}</div>` : ''}
+    </div>`;
+}
+
+function buildLogOverlayBar(table) {
+  if (!hasActiveLog() || state.selectedTableId !== table.table_id) {
+    return '';
+  }
+  const mapping = (state.logOverlay && state.logOverlay.mapping) || resolveLogMapping(table);
+  const columns = state.log?.header || [];
+  const overlay = state.logOverlay;
+  const needsX = Number(table.cols || 0) > 1;
+  const needsY = Number(table.rows || 0) > 1;
+  const activeCell = overlay?.active_cell;
+  const activeCellLabel = activeCell ? `R${activeCell.row + 1} · C${activeCell.col + 1}` : 'No active cell';
+  const currentX = overlay?.current_values?.x_value;
+  const currentY = overlay?.current_values?.y_value;
+  const currentMap = overlay?.current_values?.map_value;
+  const mappingWarning = ((needsX && !mapping.x_column) || (needsY && !mapping.y_column))
+    ? `<div class="log-overlay-bar__warning">Choose ${needsX && needsY ? 'X and Y' : (needsX ? 'an X' : 'a Y')} log column${needsX && needsY ? 's' : ''} to enable the overlay for this table.</div>`
+    : '';
+  return `
+    <div class="log-overlay-bar${mappingWarning ? ' has-warning' : ''}" data-log-table-id="${escapeHtml(table.table_id)}">
+      <div class="log-overlay-bar__row">
+        <div class="log-overlay-bar__summary">
+          <span class="log-chip">${escapeHtml(activeCellLabel)}</span>
+          <span class="log-chip">X ${escapeHtml(formatMaybeNumber(currentX))}</span>
+          <span class="log-chip">Y ${escapeHtml(formatMaybeNumber(currentY))}</span>
+          ${currentMap !== undefined ? `<span class="log-chip">Map ${escapeHtml(formatMaybeNumber(currentMap))}</span>` : ''}
+          <span class="log-chip">${escapeHtml(`${overlay?.mapped_sample_count || 0} mapped / ${overlay?.unmapped_sample_count || 0} unmapped`)}</span>
+        </div>
+      </div>
+      <div class="log-overlay-bar__row">
+        ${needsX ? `<label class="log-mapping-field">
+          <span>X Axis Source</span>
+          <select data-log-mapping="x_column">
+            ${buildLogColumnOptions(columns, mapping.x_column)}
+          </select>
+        </label>` : ''}
+        ${needsY ? `<label class="log-mapping-field">
+          <span>Y Axis Source</span>
+          <select data-log-mapping="y_column">
+            ${buildLogColumnOptions(columns, mapping.y_column)}
+          </select>
+        </label>` : ''}
+        <label class="log-mapping-field">
+          <span>Map Filter</span>
+          <select data-log-mapping="map_column">
+            <option value="">No map filter</option>
+            ${buildLogColumnOptions(columns, mapping.map_column)}
+          </select>
+        </label>
+      </div>
+      ${mappingWarning}
     </div>`;
 }
 
@@ -2069,17 +2603,22 @@ function selectionEdgeClasses(selection, row, col) {
 
 function buildHeatmapStyle(table, row, col) {
   const stats = getGridStats(table.grid || []);
-  if (!stats || stats.max <= stats.min) {
-    return '';
+  const layers = [];
+  if (stats && stats.max > stats.min) {
+    const value = Number((table.grid[row] || [])[col]);
+    if (Number.isFinite(value)) {
+      const ratio = Math.max(0, Math.min(1, (value - stats.min) / (stats.max - stats.min)));
+      const hue = 120 - (ratio * 120);
+      const alpha = 0.2 + (ratio * 0.18);
+      layers.push(`linear-gradient(180deg, hsla(${hue}, 72%, 45%, ${alpha}) 0%, hsla(${hue}, 70%, 32%, ${alpha * 0.95}) 100%)`);
+    }
   }
-  const value = Number((table.grid[row] || [])[col]);
-  if (!Number.isFinite(value)) {
-    return '';
+  const dwellRatio = getLogDwellRatio(table, row, col);
+  if (dwellRatio > 0) {
+    const dwellAlpha = 0.12 + (dwellRatio * 0.28);
+    layers.push(`linear-gradient(180deg, rgba(125, 211, 252, ${dwellAlpha}) 0%, rgba(59, 130, 246, ${dwellAlpha * 0.92}) 100%)`);
   }
-  const ratio = Math.max(0, Math.min(1, (value - stats.min) / (stats.max - stats.min)));
-  const hue = 120 - (ratio * 120);
-  const alpha = 0.2 + (ratio * 0.18);
-  return `background: linear-gradient(180deg, hsla(${hue}, 72%, 45%, ${alpha}) 0%, hsla(${hue}, 70%, 32%, ${alpha * 0.95}) 100%);`;
+  return layers.length ? `background: ${layers.join(', ')};` : '';
 }
 
 function getGridStats(grid) {
@@ -2098,6 +2637,34 @@ function getGridStats(grid) {
     min: Math.min(...values),
     max: Math.max(...values),
   };
+}
+
+function getLogDwellRatio(table, row, col) {
+  if (!state.logOverlay || state.selectedTableId !== table.table_id || !Array.isArray(state.logOverlay.dwell_matrix)) {
+    return 0;
+  }
+  const dwell = Number((state.logOverlay.dwell_matrix[row] || [])[col] || 0);
+  const maxDwell = Number(state.logOverlay.summary?.max_dwell || 0);
+  if (!Number.isFinite(dwell) || !Number.isFinite(maxDwell) || maxDwell <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, dwell / maxDwell));
+}
+
+function isActiveLogCell(table, row, col) {
+  const active = state.logOverlay?.active_cell;
+  return Boolean(active && state.selectedTableId === table.table_id && active.row === row && active.col === col);
+}
+
+function buildLogColumnOptions(columns, selected) {
+  return (columns || []).map(column => (
+    `<option value="${escapeHtml(column)}"${column === selected ? ' selected' : ''}>${escapeHtml(column)}</option>`
+  )).join('');
+}
+
+function formatMaybeNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? formatNumber(numeric) : 'n/a';
 }
 
 function selectionContains(selection, row, col) {
@@ -2545,6 +3112,9 @@ async function runEditorAction(tableId, previewOnly) {
   state.session = data.session || state.session;
   state.previews[tableId] = data.preview || null;
   state.tables = state.tables.map(table => (table.table_id === tableId ? data.table : table));
+  if (state.selectedTableId === tableId && hasActiveLog()) {
+    await refreshLogOverlay();
+  }
   updateDraftToolbar();
   renderList();
   showToast('Draft updated.');
@@ -2577,6 +3147,9 @@ async function applyAxisDraft(tableId, axisName) {
     state.axisDrafts[tableId] = {};
   }
   state.axisDrafts[tableId][axisName] = [...(axisName === 'x' ? (data.table.x_labels || []) : (data.table.y_labels || []))];
+  if (state.selectedTableId === tableId && hasActiveLog()) {
+    await refreshLogOverlay();
+  }
   updateDraftToolbar();
   renderList();
   showToast(`${String(axisName).toUpperCase()} axis updated.`);
@@ -2596,6 +3169,9 @@ async function undoDraft() {
   state.categories = data.categories || state.categories;
   state.session = data.session || null;
   state.previews = {};
+  if (hasActiveLog()) {
+    await refreshLogOverlay();
+  }
   updateDraftToolbar();
   renderList();
   showToast('Undid the last draft edit.');
@@ -2616,6 +3192,9 @@ async function resetDraft() {
   state.session = data.session || null;
   state.previews = {};
   state.selections = {};
+  if (hasActiveLog()) {
+    await refreshLogOverlay();
+  }
   updateDraftToolbar();
   renderList();
   showToast('Draft reset to the original BIN.');
@@ -2714,6 +3293,7 @@ async function restoreDraftSession() {
   state.files = {
     xdf: state.files.xdf,
     bin: state.files.bin,
+    log: state.files.log,
   };
   const fileNames = parsed.file_names || {};
   $('status-xdf').textContent = fileNames.xdf || state.session?.source_xdf_name || 'Restored draft XDF';
@@ -2721,6 +3301,9 @@ async function restoreDraftSession() {
   state.selectedTableId = state.selectedTableId && state.tables.some(table => table.table_id === state.selectedTableId)
     ? state.selectedTableId
     : state.tables[0]?.table_id || null;
+  if (state.files.log) {
+    await parseLogFile({ silent: true });
+  }
   updateDraftToolbar();
   renderList();
   showToast('Draft session restored.');
@@ -2751,7 +3334,8 @@ async function loadPreferences() {
     }
     const data = await response.json();
     state.preferences = normalizePreferences(data);
-  renderFolderList();
+    syncLogPlaybackPrefs();
+    renderFolderList();
   } catch (_error) {
     // Keep defaults if preferences are unavailable.
   }
@@ -2759,6 +3343,7 @@ async function loadPreferences() {
 
 function normalizePreferences(payload) {
   const favorites = payload?.favorites || {};
+  const log = payload?.log || {};
   return {
     favorites: {
       tables: Array.isArray(favorites.tables) ? favorites.tables : [],
@@ -2766,6 +3351,13 @@ function normalizePreferences(payload) {
     },
     folders: Array.isArray(payload?.folders) ? payload.folders : [],
     assignments: payload?.assignments && typeof payload.assignments === 'object' ? payload.assignments : {},
+    log: {
+      axis_mappings: log.axis_mappings && typeof log.axis_mappings === 'object' ? log.axis_mappings : {},
+      graph: {
+        enabled_columns: Array.isArray(log.graph?.enabled_columns) ? log.graph.enabled_columns : [],
+      },
+      playback_speed: Number.isFinite(Number(log.playback_speed)) ? Number(log.playback_speed) : 1,
+    },
   };
 }
 
@@ -3314,6 +3906,9 @@ async function applyImportedTable() {
       mirroredCount += 1;
     }
   }
+  if (state.selectedTableId === state.importTableId && hasActiveLog()) {
+    await refreshLogOverlay();
+  }
   updateDraftToolbar();
   renderList();
   closeImportModal();
@@ -3624,7 +4219,7 @@ function selectClipboardFallbackText() {
 }
 
 function resetAll() {
-  state.files = { xdf: null, bin: null };
+  state.files = { xdf: null, bin: null, log: null };
   state.tables = [];
   state.categories = {};
   state.search = '';
@@ -3637,13 +4232,18 @@ function resetAll() {
   state.axisDrafts = {};
   state.selectedTableId = null;
   state.selectedCategory = null;
+  state.log = null;
+  state.logOverlay = null;
+  stopLogPlayback();
   searchInput.value = '';
   searchClear.style.display = 'none';
   viewModeSelect.value = state.viewMode;
 
-  ['xdf', 'bin'].forEach(key => {
+  ['xdf', 'bin', 'log'].forEach(key => {
     $(`input-${key}`).value = '';
-    $(`status-${key}`).textContent = key === 'xdf' ? 'No XDF selected' : 'No BIN selected';
+    $(`status-${key}`).textContent = key === 'xdf'
+      ? 'No XDF selected'
+      : (key === 'bin' ? 'No BIN selected' : 'No CSV log selected');
     $(`drop-${key}`).classList.remove('has-file');
   });
 
