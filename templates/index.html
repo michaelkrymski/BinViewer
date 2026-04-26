@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TunerPro XDF Viewer</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260409c" />
+  <link rel="stylesheet" href="/static/style.css?v=20260418a" />
 </head>
 <body>
 <header>
@@ -290,10 +290,17 @@
             <option value="values_and_axes">Values + Axes</option>
           </select>
         </label>
-        <button class="btn btn-ghost btn-sm" id="import-copy-template">Copy AI Template</button>
+        <button class="btn btn-ghost btn-sm" id="import-copy-template">Show/Copy AI Template</button>
         <button class="btn btn-ghost btn-sm" id="import-clear">Clear</button>
         <button class="btn btn-ghost btn-sm" id="import-preview-btn">Preview</button>
         <button class="btn btn-primary btn-sm" id="import-apply-btn" disabled>Apply to Draft</button>
+      </div>
+      <div class="import-mirror" id="import-mirror-panel" style="display:none">
+        <label class="editor-toggle">
+          <input id="import-mirror-toggle" type="checkbox" />
+          <span>Mirror imported changes to sibling maps</span>
+        </label>
+        <div class="import-mirror__list" id="import-mirror-list"></div>
       </div>
       <textarea id="import-text" class="import-textarea" placeholder="[TABLE IMPORT]
 Title: Fuel (Main) (Map 2)
@@ -320,6 +327,7 @@ Values:
       <p class="modal-hint">Your browser blocked automatic clipboard access. Select the text below and copy it from this device.</p>
       <textarea id="clipboard-text" class="import-textarea" rows="12"></textarea>
       <div class="metadata-form__actions">
+        <button class="btn btn-ghost btn-sm" id="clipboard-copy">Try Copy Again</button>
         <button class="btn btn-primary btn-sm" id="clipboard-select">Select Text</button>
       </div>
     </div>
@@ -328,6 +336,6 @@ Values:
 
 <div class="toast" id="copy-toast">Copied to clipboard!</div>
 
-<script src="/static/app.js?v=20260417a"></script>
+<script src="/static/app.js?v=20260418e"></script>
 </body>
 </html>

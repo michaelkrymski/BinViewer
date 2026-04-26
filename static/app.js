@@ -21,15 +21,14 @@ function loadEditorPrefs() {
     const raw = window.localStorage.getItem(EDITOR_PREFS_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
     if (!parsed || typeof parsed !== 'object') {
-      return { operation: 'add_constant', value: 1, mirrorAcrossMaps: false };
+      return { operation: 'add_constant', value: 1 };
     }
     return {
       operation: parsed.operation || 'add_constant',
       value: Number.isFinite(Number(parsed.value)) ? parsed.value : 1,
-      mirrorAcrossMaps: Boolean(parsed.mirrorAcrossMaps),
     };
   } catch (error) {
-    return { operation: 'add_constant', value: 1, mirrorAcrossMaps: false };
+    return { operation: 'add_constant', value: 1 };
   }
 }
 
@@ -126,6 +125,11 @@ Current Values:
 <paste copied table values here>`;
 
 const $ = id => document.getElementById(id);
+const on = (node, eventName, handler) => {
+  if (node) {
+    node.addEventListener(eventName, handler);
+  }
+};
 const resultsArea = $('results-area');
 const tableList = $('table-list');
 const mapTabs = $('map-tabs');
@@ -197,6 +201,9 @@ const importMode = $('import-mode');
 const importError = $('import-error');
 const importSummary = $('import-summary');
 const importCompare = $('import-compare');
+const importMirrorPanel = $('import-mirror-panel');
+const importMirrorToggle = $('import-mirror-toggle');
+const importMirrorList = $('import-mirror-list');
 const btnImportClear = $('import-clear');
 const btnImportPreview = $('import-preview-btn');
 const btnImportApply = $('import-apply-btn');
@@ -213,10 +220,20 @@ const btnProjectExport = $('btn-project-export');
 const clipboardModal = $('clipboard-modal');
 const clipboardText = $('clipboard-text');
 const btnClipboardClose = $('clipboard-close');
+const btnClipboardCopy = $('clipboard-copy');
 const btnClipboardSelect = $('clipboard-select');
 
 let debugTables = [];
 let dragSelection = null;
+
+document.addEventListener('click', event => {
+  if (!event.target.closest('#import-copy-template')) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  copyImportTemplate();
+});
 
 init();
 
@@ -329,78 +346,79 @@ function wireToolbar() {
 }
 
 function wireModals() {
-  $('debug-close').addEventListener('click', () => { debugModal.style.display = 'none'; });
-  $('ai-context-close').addEventListener('click', () => { aiContextModal.style.display = 'none'; });
-  $('metadata-close').addEventListener('click', closeMetadataModal);
-  $('folder-close').addEventListener('click', closeFolderModal);
-  $('import-close').addEventListener('click', closeImportModal);
-  btnClipboardClose.addEventListener('click', closeClipboardModal);
-  btnClipboardSelect.addEventListener('click', selectClipboardFallbackText);
-  btnQuickAddClose.addEventListener('click', closeQuickAddModal);
-  btnQuickAddCancel.addEventListener('click', closeQuickAddModal);
-  btnImportClear.addEventListener('click', clearImportModal);
-  btnImportCopyTemplate.addEventListener('click', copyImportTemplate);
-  btnImportPreview.addEventListener('click', previewImportedTable);
-  btnImportApply.addEventListener('click', applyImportedTable);
-  btnQuickAddClear.addEventListener('click', () => {
+  on($('debug-close'), 'click', () => { debugModal.style.display = 'none'; });
+  on($('ai-context-close'), 'click', () => { aiContextModal.style.display = 'none'; });
+  on($('metadata-close'), 'click', closeMetadataModal);
+  on($('folder-close'), 'click', closeFolderModal);
+  on($('import-close'), 'click', closeImportModal);
+  on(btnClipboardClose, 'click', closeClipboardModal);
+  on(btnClipboardCopy, 'click', copyClipboardModalText);
+  on(btnClipboardSelect, 'click', selectClipboardFallbackText);
+  on(btnQuickAddClose, 'click', closeQuickAddModal);
+  on(btnQuickAddCancel, 'click', closeQuickAddModal);
+  on(btnImportClear, 'click', clearImportModal);
+  on(btnImportPreview, 'click', previewImportedTable);
+  on(btnImportApply, 'click', applyImportedTable);
+  on(importMirrorToggle, 'change', renderImportMirrorTargets);
+  on(btnQuickAddClear, 'click', () => {
     quickAddSearch.value = '';
     state.quickAddQuery = '';
     renderQuickAddList();
   });
-  btnQuickAddSave.addEventListener('click', saveQuickAddAssignments);
+  on(btnQuickAddSave, 'click', saveQuickAddAssignments);
 
-  debugModal.addEventListener('click', event => {
+  on(debugModal, 'click', event => {
     if (event.target === debugModal) {
       debugModal.style.display = 'none';
     }
   });
 
-  aiContextModal.addEventListener('click', event => {
+  on(aiContextModal, 'click', event => {
     if (event.target === aiContextModal) {
       aiContextModal.style.display = 'none';
     }
   });
 
-  metadataModal.addEventListener('click', event => {
+  on(metadataModal, 'click', event => {
     if (event.target === metadataModal) {
       closeMetadataModal();
     }
   });
-  folderModal.addEventListener('click', event => {
+  on(folderModal, 'click', event => {
     if (event.target === folderModal) {
       closeFolderModal();
     }
   });
-  quickAddModal.addEventListener('click', event => {
+  on(quickAddModal, 'click', event => {
     if (event.target === quickAddModal) {
       closeQuickAddModal();
     }
   });
-  importModal.addEventListener('click', event => {
+  on(importModal, 'click', event => {
     if (event.target === importModal) {
       closeImportModal();
     }
   });
-  clipboardModal.addEventListener('click', event => {
+  on(clipboardModal, 'click', event => {
     if (event.target === clipboardModal) {
       closeClipboardModal();
     }
   });
 
-  btnMetadataSave.addEventListener('click', saveMetadataOverride);
-  btnMetadataReset.addEventListener('click', clearMetadataOverride);
-  btnFolderSave.addEventListener('click', saveFolder);
-  btnFolderDelete.addEventListener('click', deleteFolder);
-  quickAddSearch.addEventListener('input', () => {
+  on(btnMetadataSave, 'click', saveMetadataOverride);
+  on(btnMetadataReset, 'click', clearMetadataOverride);
+  on(btnFolderSave, 'click', saveFolder);
+  on(btnFolderDelete, 'click', deleteFolder);
+  on(quickAddSearch, 'input', () => {
     state.quickAddQuery = quickAddSearch.value.trim().toLowerCase();
     renderQuickAddList();
   });
-  importText.addEventListener('input', () => {
+  on(importText, 'input', () => {
     hideImportError();
     btnImportApply.disabled = true;
   });
 
-  debugSearch.addEventListener('input', () => renderDebugOutput(debugTables));
+  on(debugSearch, 'input', () => renderDebugOutput(debugTables));
 }
 
 function setFile(key, file) {
@@ -1767,12 +1785,6 @@ function buildEditorPanel(table) {
         <button class="btn btn-ghost btn-sm editor-preview-btn" type="button">Preview</button>
         <button class="btn btn-primary btn-sm editor-apply-btn" type="button">Apply to Draft</button>
       </div>
-      <div class="editor-row editor-row--options">
-        <label class="editor-toggle">
-          <input class="editor-mirror-toggle" type="checkbox" ${formState.mirrorAcrossMaps ? 'checked' : ''} />
-          <span>Mirror to sibling maps</span>
-        </label>
-      </div>
       <div class="editor-preview">${previewSummary}</div>
     </div>`;
 }
@@ -2289,20 +2301,17 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
     const operationSelect = panel.querySelector('.editor-operation');
     const valueWrap = panel.querySelector('.editor-value-wrap');
     const valueInput = panel.querySelector('.editor-value');
-    const mirrorToggle = panel.querySelector('.editor-mirror-toggle');
 
     const syncFormState = () => {
       const value = valueInput ? valueInput.value : '';
-      state.editorForms[tableId] = {
-        operation: operationSelect.value,
-        value,
-        mirrorAcrossMaps: Boolean(mirrorToggle?.checked),
-      };
-      state.lastEditorPreset = {
-        operation: operationSelect.value,
-        value,
-        mirrorAcrossMaps: Boolean(mirrorToggle?.checked),
-      };
+    state.editorForms[tableId] = {
+      operation: operationSelect.value,
+      value,
+    };
+    state.lastEditorPreset = {
+      operation: operationSelect.value,
+      value,
+    };
       saveEditorPrefs();
       valueWrap.style.display = operationSelect.value.startsWith('interpolate') ? 'none' : '';
     };
@@ -2311,9 +2320,6 @@ function wireEditableScope(container, table, { hasCellGrid = false } = {}) {
     operationSelect.addEventListener('change', syncFormState);
     if (valueInput) {
       valueInput.addEventListener('input', syncFormState);
-    }
-    if (mirrorToggle) {
-      mirrorToggle.addEventListener('change', syncFormState);
     }
 
     panel.querySelector('[data-editor-action="select-all"]').addEventListener('click', event => {
@@ -2472,9 +2478,8 @@ function beginInlineCellEdit(cell, table) {
       }
       state.selections[table.table_id] = normalizeSelection({ row_start: row, row_end: row, col_start: col, col_end: col });
       state.selectionAnchors[table.table_id] = { row, col };
-      const mirrorAcrossMaps = Boolean(state.editorForms[table.table_id]?.mirrorAcrossMaps || state.lastEditorPreset?.mirrorAcrossMaps);
-      state.editorForms[table.table_id] = { operation: 'set_cells', value, mirrorAcrossMaps };
-      state.lastEditorPreset = { operation: 'set_cells', value, mirrorAcrossMaps };
+      state.editorForms[table.table_id] = { operation: 'set_cells', value };
+      state.lastEditorPreset = { operation: 'set_cells', value };
       saveEditorPrefs();
       await runEditorAction(table.table_id, false);
     } else if (event.key === 'Escape') {
@@ -2501,7 +2506,7 @@ async function runEditorAction(tableId, previewOnly) {
     return;
   }
 
-  const formState = state.editorForms[tableId] || state.lastEditorPreset || { operation: 'add_constant', value: 1, mirrorAcrossMaps: false };
+  const formState = state.editorForms[tableId] || state.lastEditorPreset || { operation: 'add_constant', value: 1 };
   const payload = {
     table_id: tableId,
     operation: formState.operation,
@@ -2540,29 +2545,6 @@ async function runEditorAction(tableId, previewOnly) {
   state.session = data.session || state.session;
   state.previews[tableId] = data.preview || null;
   state.tables = state.tables.map(table => (table.table_id === tableId ? data.table : table));
-  if (formState.mirrorAcrossMaps) {
-    const siblings = getMirrorSiblingTables(tableId);
-    for (const sibling of siblings) {
-      const siblingResponse = await fetch(`/api/session/${state.session.session_id}/apply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          table_id: sibling.table_id,
-          operation: payload.operation,
-          selection: payload.selection,
-          parameters: payload.parameters,
-        }),
-      });
-      const siblingData = await siblingResponse.json();
-      if (!siblingResponse.ok) {
-        showToast(siblingData.error || `Mirror failed for ${sibling.title}.`);
-        continue;
-      }
-      state.session = siblingData.session || state.session;
-      state.tables = state.tables.map(table => (table.table_id === sibling.table_id ? siblingData.table : table));
-      state.previews[sibling.table_id] = siblingData.preview || null;
-    }
-  }
   updateDraftToolbar();
   renderList();
   showToast('Draft updated.');
@@ -2595,28 +2577,6 @@ async function applyAxisDraft(tableId, axisName) {
     state.axisDrafts[tableId] = {};
   }
   state.axisDrafts[tableId][axisName] = [...(axisName === 'x' ? (data.table.x_labels || []) : (data.table.y_labels || []))];
-  const formState = state.editorForms[tableId] || state.lastEditorPreset || { mirrorAcrossMaps: false };
-  if (formState.mirrorAcrossMaps) {
-    const siblings = getMirrorSiblingTables(tableId);
-    for (const sibling of siblings) {
-      const siblingResponse = await fetch(`/api/session/${state.session.session_id}/axis`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_id: sibling.table_id, axis: axisName, values }),
-      });
-      const siblingData = await siblingResponse.json();
-      if (!siblingResponse.ok) {
-        showToast(siblingData.error || `Mirror failed for ${sibling.title}.`);
-        continue;
-      }
-      state.session = siblingData.session || state.session;
-      state.tables = state.tables.map(table => (table.table_id === sibling.table_id ? siblingData.table : table));
-      if (!state.axisDrafts[sibling.table_id]) {
-        state.axisDrafts[sibling.table_id] = {};
-      }
-      state.axisDrafts[sibling.table_id][axisName] = [...(axisName === 'x' ? (siblingData.table.x_labels || []) : (siblingData.table.y_labels || []))];
-    }
-  }
   updateDraftToolbar();
   renderList();
   showToast(`${String(axisName).toUpperCase()} axis updated.`);
@@ -3143,6 +3103,10 @@ function openImportModal(tableId) {
   importCompare.innerHTML = '';
   hideImportError();
   btnImportApply.disabled = true;
+  if (importMirrorToggle) {
+    importMirrorToggle.checked = false;
+  }
+  renderImportMirrorTargets();
   importModal.style.display = 'flex';
   importText.focus();
 }
@@ -3164,13 +3128,48 @@ function clearImportModal() {
   importCompare.innerHTML = '';
   hideImportError();
   btnImportApply.disabled = true;
+  renderImportMirrorTargets();
   importText.focus();
+}
+
+function getImportMirrorTargets() {
+  return getMirrorSiblingTables(state.importTableId)
+    .slice()
+    .sort((a, b) => extractVariantNumber(getTableMapVariant(a)) - extractVariantNumber(getTableMapVariant(b)));
+}
+
+function renderImportMirrorTargets() {
+  if (!importMirrorPanel || !importMirrorToggle || !importMirrorList) {
+    return;
+  }
+  const table = state.tables.find(item => item.table_id === state.importTableId);
+  const targets = getImportMirrorTargets();
+  if (!table || !targets.length) {
+    importMirrorPanel.style.display = 'none';
+    importMirrorToggle.checked = false;
+    importMirrorList.innerHTML = '';
+    return;
+  }
+
+  importMirrorPanel.style.display = '';
+  const sourceMap = getTableMapVariant(table) || 'Current map';
+  const targetList = targets.map(target => {
+    const mapLabel = getTableMapVariant(target) || 'Sibling map';
+    return `<li>${escapeHtml(mapLabel)}: ${escapeHtml(getDisplayTitle(target))}</li>`;
+  }).join('');
+  const verb = importMirrorToggle.checked ? 'Will also change' : 'Available sibling maps';
+  importMirrorList.innerHTML = `
+    <div>${escapeHtml(verb)} from ${escapeHtml(sourceMap)}:</div>
+    <ul>${targetList}</ul>
+  `;
 }
 
 function copyImportTemplate() {
   const table = state.tables.find(item => item.table_id === state.importTableId);
+  let templateText = AI_TABLE_IMPORT_TEMPLATE;
   if (!table) {
-    return copyText(AI_TABLE_IMPORT_TEMPLATE);
+    showImportTemplateText(templateText);
+    return false;
   }
   const lines = [
     'Fill or revise this ECU calibration table and return only a TunerPro XDF Viewer import block.',
@@ -3203,7 +3202,25 @@ function copyImportTemplate() {
   lines.push('');
   lines.push('REQUEST');
   lines.push('Replace the values above with your recommended filled table, keeping the same import format.');
-  return copyText(lines.join('\n'));
+  templateText = lines.join('\n');
+  showImportTemplateText(templateText);
+  return false;
+}
+
+function showImportTemplateText(templateText) {
+  importText.value = templateText;
+  btnImportApply.disabled = true;
+  importSummary.innerHTML = '<div class="import-summary__ok">AI template inserted below. Press Ctrl+C to copy the selected text.</div>';
+  importCompare.innerHTML = '';
+  hideImportError();
+  window.setTimeout(selectImportText, 0);
+  showToast('Template inserted. Press Ctrl+C to copy it.');
+}
+
+function selectImportText() {
+  importText.focus();
+  importText.select();
+  importText.setSelectionRange(0, importText.value.length);
 }
 
 function buildImportValueRows(table) {
@@ -3272,10 +3289,10 @@ async function applyImportedTable() {
   delete state.axisDrafts[state.importTableId];
   delete state.previews[state.importTableId];
   state.tables = state.tables.map(table => (table.table_id === state.importTableId ? data.table : table));
-  const formState = state.editorForms[state.importTableId] || state.lastEditorPreset || { mirrorAcrossMaps: false };
-  if (formState.mirrorAcrossMaps) {
-    const siblings = getMirrorSiblingTables(state.importTableId);
-    for (const sibling of siblings) {
+  let mirroredCount = 0;
+  if (importMirrorToggle?.checked) {
+    const mirrorTargets = getImportMirrorTargets();
+    for (const sibling of mirrorTargets) {
       const siblingResponse = await fetch(`/api/session/${state.session.session_id}/import-apply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3294,12 +3311,13 @@ async function applyImportedTable() {
       delete state.axisDrafts[sibling.table_id];
       delete state.previews[sibling.table_id];
       state.tables = state.tables.map(table => (table.table_id === sibling.table_id ? siblingData.table : table));
+      mirroredCount += 1;
     }
   }
   updateDraftToolbar();
   renderList();
   closeImportModal();
-  showToast('Imported table applied to draft.');
+  showToast(mirroredCount ? `Imported table applied to draft and ${mirroredCount} sibling map${mirroredCount === 1 ? '' : 's'}.` : 'Imported table applied to draft.');
 }
 
 function renderImportPreview() {
@@ -3533,7 +3551,7 @@ function copyForAI(table) {
   copyText(lines.join('\n'));
 }
 
-async function copyText(text) {
+async function copyText(text, options = {}) {
   const value = String(text || '');
   if (!value) {
     showToast('Nothing to copy.');
@@ -3542,7 +3560,12 @@ async function copyText(text) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(value);
-      showToast('Copied to this device.');
+      if (options.showModal) {
+        openClipboardModal(value);
+        showToast('Copied. Text is also open below.');
+      } else {
+        showToast('Copied to this device.');
+      }
       return true;
     }
   } catch (error) {
@@ -3563,7 +3586,12 @@ async function copyText(text) {
     const copied = document.execCommand('copy');
     textarea.remove();
     if (copied) {
-      showToast('Copied to this device.');
+      if (options.showModal) {
+        openClipboardModal(value);
+        showToast('Copied. Text is also open below.');
+      } else {
+        showToast('Copied to this device.');
+      }
       return true;
     }
   } catch (error) {
@@ -3573,6 +3601,10 @@ async function copyText(text) {
   openClipboardModal(value);
   showToast('Clipboard blocked. Select the text to copy.');
   return false;
+}
+
+function copyClipboardModalText() {
+  copyText(clipboardText.value);
 }
 
 function openClipboardModal(text) {
