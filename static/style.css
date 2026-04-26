@@ -2336,6 +2336,26 @@ header {
   margin-bottom: 0;
 }
 
+.import-mirror {
+  border: 1px solid var(--border-dim);
+  border-radius: var(--radius-sm);
+  background: rgba(148,163,184,.05);
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.import-mirror__list {
+  margin-top: 0.45rem;
+  color: var(--text-dim);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.import-mirror__list ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.15rem;
+}
+
 .import-textarea {
   width: 100%;
   min-height: 220px;
