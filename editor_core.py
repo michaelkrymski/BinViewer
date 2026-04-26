@@ -22,7 +22,7 @@ from bin_reader import (
     pack_raw_value,
     raw_numeric_range,
 )
-from table_ranker import build_table_metadata, load_description_overlay, load_tuning_history
+from table_ranker import build_table_metadata_list, load_description_overlay, load_tuning_history
 from xdf_parser import parse_xdf
 
 DEFAULT_EXPORT_LOG_DIR = Path.home() / 'Documents' / 'N55Maps' / 'viewer_export_logs'
@@ -124,9 +124,9 @@ class EditSession:
         self._source_tables: dict[str, dict] = {}
         self._current_tables: dict[str, dict] = {}
 
-        for index, table_def in enumerate(self.table_defs):
+        metadata_list = build_table_metadata_list(self.table_defs, self.categories_map)
+        for index, (table_def, metadata) in enumerate(zip(self.table_defs, metadata_list)):
             table_id = make_table_id(table_def, index)
-            metadata = build_table_metadata(table_def, self.categories_map)
             binding = TableBinding(table_id=table_id, index=index, table_def=table_def, metadata=metadata)
             self.bindings.append(binding)
             self._binding_by_id[table_id] = binding

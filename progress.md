@@ -17,6 +17,7 @@
 - Working copy: `D:\Development\BinViewer`
 
 ## Completed
+- 2026-04-26: Replaced one-off `Map 1 (Inferred)` title guessing with family-topology analysis in [table_ranker.py](C:/Users/Michael%20Krymski/Documents/TunerPro%20Converter/table_ranker.py). Metadata is now computed in batch so sibling presence can distinguish `global_shared`, `implicit_map1_with_explicit_others`, and `banked_map1_collapses_to_main`. Verified real XDF behavior for `Fuel (Main) (Bank 1/2)` -> canonical `Fuel (Main)` on `Map 1`, with `Fuel (Main) (Map 2/3/4)` as explicit siblings.
 - Read-only viewer baseline preserved and tagged as `v0.1-readonly-baseline`.
 - Workflow, hierarchy, flat list, family grouping, AI Context, and description overlay are in place.
 - Added shared `editor_core.py` session model with stable `table_id`, selection normalization, preview/apply operations, undo/reset, export bundle support, and BIN writeback.

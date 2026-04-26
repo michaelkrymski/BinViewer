@@ -152,12 +152,25 @@ SEED_PRIORITY_RULES = [
     ("enable map switch", 3600),
 ]
 
-MAP1_FAMILY_RULES = [
-    (re.compile(r"^fuel \(bank 1\)$", re.IGNORECASE), "Fuel (Main)", "Map 1"),
-    (re.compile(r"^fuel \(bank 2\)$", re.IGNORECASE), "Fuel (Secondary)", "Map 1"),
-    (re.compile(r"^timing \(main\)$", re.IGNORECASE), "Timing (Main)", "Map 1"),
-    (re.compile(r"^timing \(spool\)$", re.IGNORECASE), "Timing (Spool)", "Map 1"),
+CANONICAL_FAMILY_RULES = [
+    {
+        "pattern": re.compile(r"^fuel(?: \(main\))? \(bank 1\)$", re.IGNORECASE),
+        "canonical_family": "Fuel (Main)",
+        "subrole": "Bank 1",
+    },
+    {
+        "pattern": re.compile(r"^fuel(?: \(main\))? \(bank 2\)$", re.IGNORECASE),
+        "canonical_family": "Fuel (Main)",
+        "subrole": "Bank 2",
+    },
 ]
+
+KNOWN_FAMILY_TOPOLOGY_RULES = {
+    "fuel (main)": {
+        "topology": "banked_map1_collapses_to_main",
+        "infer_subroles": {"Bank 1", "Bank 2"},
+    },
+}
 
 BUILTIN_DESCRIPTION_OVERLAY = {
     "Fuel (Main)": {
@@ -289,27 +302,93 @@ def parse_title_variants(title: str) -> dict:
     variant_label = " / ".join(variant_parts)
 
     family_title = family_title or title
-    effective_map_variant = map_variant
-    map_inferred = False
-    for pattern, inferred_family, inferred_map in MAP1_FAMILY_RULES:
-        if pattern.match(family_title):
-            family_title = inferred_family
-            if effective_map_variant is None:
-                effective_map_variant = inferred_map
-                map_inferred = True
+    subrole = None
+    for rule in CANONICAL_FAMILY_RULES:
+        if rule["pattern"].match(family_title):
+            family_title = rule["canonical_family"]
+            subrole = rule.get("subrole")
             break
 
     return {
         "family_title": family_title,
         "normalized_family_title": normalize_title(family_title),
         "map_variant": map_variant,
-        "effective_map_variant": effective_map_variant,
         "path_variant": path_variant,
         "mode_variant": mode_variant,
         "axis_suffix": axis_suffix,
         "variant_label": variant_label,
-        "map_inferred": map_inferred,
+        "subrole": subrole,
     }
+
+
+def build_table_metadata_list(table_defs: list[dict], categories_map: dict[int, str]) -> list[dict]:
+    topology = analyze_family_topology(table_defs)
+    return [
+        _build_table_metadata(table_def, categories_map, topology.get(index))
+        for index, table_def in enumerate(table_defs)
+    ]
+
+
+def analyze_family_topology(table_defs: list[dict]) -> dict[int, dict]:
+    grouped_records: dict[str, list[dict]] = defaultdict(list)
+    topology_by_index: dict[int, dict] = {}
+
+    for index, table_def in enumerate(table_defs):
+        variants = parse_title_variants(table_def.get("title", ""))
+        record = {
+            "index": index,
+            "title": table_def.get("title", ""),
+            "normalized_title": normalize_title(table_def.get("title", "")),
+            "variants": variants,
+        }
+        grouped_records[variants["normalized_family_title"]].append(record)
+
+    for normalized_family, records in grouped_records.items():
+        explicit_maps = sorted({r["variants"]["map_variant"] for r in records if r["variants"].get("map_variant")})
+        unlabeled_records = [r for r in records if not r["variants"].get("map_variant")]
+        known_rule = KNOWN_FAMILY_TOPOLOGY_RULES.get(normalized_family, {})
+        unlabeled_subroles = {r["variants"].get("subrole") for r in unlabeled_records if r["variants"].get("subrole")}
+
+        topology = "global_shared"
+        if explicit_maps:
+            topology = "explicit_multimap"
+        elif len(records) == 1:
+            topology = "single_map_only"
+
+        infer_unlabeled_to_map1 = False
+        if explicit_maps and unlabeled_records:
+            infer_unlabeled_to_map1 = True
+            topology = known_rule.get("topology") or (
+                "banked_map1_collapses_to_main" if unlabeled_subroles else "implicit_map1_with_explicit_others"
+            )
+        elif known_rule and unlabeled_subroles & set(known_rule.get("infer_subroles", set())):
+            infer_unlabeled_to_map1 = True
+            topology = known_rule.get("topology", topology)
+
+        for record in records:
+            map_variant = record["variants"].get("map_variant")
+            map_inferred = False
+            effective_map_variant = map_variant
+            assignment_reason = "explicit_map_variant" if map_variant else "no_map_assignment"
+
+            if effective_map_variant is None and infer_unlabeled_to_map1:
+                effective_map_variant = "Map 1"
+                map_inferred = True
+                if record["variants"].get("subrole"):
+                    assignment_reason = "family_topology_banked_map1"
+                else:
+                    assignment_reason = "family_topology_implicit_map1"
+
+            is_shared_global = effective_map_variant is None
+            topology_by_index[record["index"]] = {
+                "effective_map_variant": effective_map_variant,
+                "map_inferred": map_inferred,
+                "map_topology": topology,
+                "map_assignment_reason": assignment_reason,
+                "is_shared_global": is_shared_global,
+            }
+
+    return topology_by_index
 
 
 @lru_cache(maxsize=1)
@@ -399,6 +478,10 @@ def _normalize_overlay_entries(raw: dict | list) -> dict[str, dict]:
 
 
 def build_table_metadata(table_def: dict, categories_map: dict[int, str]) -> dict:
+    return build_table_metadata_list([table_def], categories_map)[0]
+
+
+def _build_table_metadata(table_def: dict, categories_map: dict[int, str], topology_info: dict | None) -> dict:
     title = table_def.get("title", "")
     description = (table_def.get("description", "") or "").strip()
     variants = parse_title_variants(title)
@@ -442,12 +525,15 @@ def build_table_metadata(table_def: dict, categories_map: dict[int, str]) -> dic
         "family_key": family_normalized,
         "preference_key": normalized,
         "map_variant": variants["map_variant"],
-        "effective_map_variant": variants["effective_map_variant"],
-        "map_inferred": variants["map_inferred"],
-        "is_shared_global": _is_shared_global(variants, normalized, table_def),
+        "effective_map_variant": (topology_info or {}).get("effective_map_variant"),
+        "map_inferred": (topology_info or {}).get("map_inferred", False),
+        "is_shared_global": (topology_info or {}).get("is_shared_global", True),
+        "map_topology": (topology_info or {}).get("map_topology", "global_shared"),
+        "map_assignment_reason": (topology_info or {}).get("map_assignment_reason", "no_map_assignment"),
         "path_variant": variants["path_variant"],
         "mode_variant": variants["mode_variant"],
         "variant_label": variants["variant_label"],
+        "subrole": variants["subrole"],
         "description_short": descriptions["description_short"],
         "description_long": descriptions["description_long"],
         "description_source": descriptions["description_source"],
@@ -556,11 +642,3 @@ def _parse_timestamp(value: str | None) -> datetime | None:
         return datetime.strptime(value.strip(), "%m/%d/%Y %H:%M:%S")
     except ValueError:
         return None
-
-
-def _is_shared_global(variants: dict, normalized: str, table_def: dict) -> bool:
-    if variants.get("map_variant"):
-        return False
-    if variants.get("map_inferred"):
-        return False
-    return True

@@ -19,7 +19,7 @@ from project_store import (
     resolve_project_paths,
     serialize_store_for_api,
 )
-from table_ranker import build_table_metadata
+from table_ranker import build_table_metadata_list
 from xdf_parser import XdfFormatError, parse_xdf
 
 app = Flask(__name__)
@@ -159,8 +159,8 @@ def api_debug():
 
         table_defs, categories_map = parse_xdf(xdf_bytes)
         out = []
-        for td in table_defs:
-            metadata = build_table_metadata(td, categories_map)
+        metadata_list = build_table_metadata_list(table_defs, categories_map)
+        for td, metadata in zip(table_defs, metadata_list):
             z = td.get('z_axis') or {}
             x = td.get('x_axis') or {}
             y = td.get('y_axis') or {}
