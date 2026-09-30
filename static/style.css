@@ -1398,6 +1398,71 @@ header {
   flex-wrap: wrap;
 }
 
+.workspace-logbar {
+  margin-bottom: 0.9rem;
+}
+
+.logbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.8rem;
+  align-items: center;
+  padding: 0.8rem 0.95rem;
+  border-radius: 16px;
+  background: rgba(10, 15, 27, 0.84);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow: 0 18px 50px rgba(3, 7, 18, 0.22);
+}
+
+.logbar__meta,
+.logbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.logbar__meta {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.18rem;
+}
+
+.logbar__title {
+  color: #7dd3fc;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.logbar__copy,
+.logbar__table,
+.logbar__time {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.logbar__scrubber {
+  min-width: 220px;
+}
+
+.logbar__speed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+.logbar__speed select {
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  color: #f8fafc;
+  border-radius: 10px;
+  padding: 0.32rem 0.45rem;
+}
+
 .workspace-shell {
   display: grid;
   grid-template-columns: 270px minmax(0, 1fr) 360px;
@@ -1879,6 +1944,51 @@ header {
   font-weight: 700;
 }
 
+.inspector-section--graph {
+  overflow: hidden;
+}
+
+.log-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.log-graph__toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.42rem;
+  max-height: 132px;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.graph-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.52rem;
+  border-radius: 999px;
+  background: rgba(8, 11, 18, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+  font-size: 0.72rem;
+}
+
+.graph-toggle input {
+  margin: 0;
+}
+
+.log-graph__chart {
+  min-height: 180px;
+}
+
+.log-chart-svg {
+  width: 100%;
+  height: 180px;
+  display: block;
+}
+
 .inspector-section .editor-panel,
 .inspector-section .axis-editor-wrap,
 .inspector-section .axis-editor,
@@ -2227,6 +2337,15 @@ header {
   filter: saturate(1.12) brightness(1.08);
 }
 
+.table-cell.has-log-dwell {
+  background-blend-mode: screen;
+}
+
+.table-cell.is-log-active,
+.scalar-display.is-log-active {
+  box-shadow: inset 0 0 0 2px rgba(125, 211, 252, 0.96), 0 0 0 1px rgba(125, 211, 252, 0.2);
+}
+
 .table-cell.is-editing {
   padding: 0 !important;
 }
@@ -2246,6 +2365,62 @@ header {
   margin: 0.7rem;
   border-radius: 14px;
   padding: 0.7rem 0.8rem;
+}
+
+.log-overlay-bar {
+  margin: 0 0.7rem 0.7rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.log-overlay-bar.has-warning {
+  border-color: rgba(245, 158, 11, 0.34);
+}
+
+.log-overlay-bar__row,
+.log-overlay-bar__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.log-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.48rem;
+  border-radius: 999px;
+  background: rgba(8, 11, 18, 0.58);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+  font-size: 0.72rem;
+}
+
+.log-mapping-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.24rem;
+  min-width: 150px;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+}
+
+.log-mapping-field select {
+  background: rgba(8, 11, 18, 0.82);
+  color: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 10px;
+  padding: 0.38rem 0.46rem;
+}
+
+.log-overlay-bar__warning {
+  color: #fcd34d;
+  font-size: 0.75rem;
 }
 
 .editor-row {
@@ -2493,6 +2668,10 @@ header {
 }
 
 @media (max-width: 900px) {
+  .logbar {
+    grid-template-columns: 1fr;
+  }
+
   .workspace-shell {
     grid-template-columns: 1fr;
   }

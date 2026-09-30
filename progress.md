@@ -2,21 +2,23 @@
 
 ## Agent Handoff Snapshot
 - Branch: codex/editor-main
-- Current stable state: editor workspace is functional and pushed
+- Current stable state: editor workspace is functional and pushed, with CSV log overlay now implemented locally on top
 - Last pushed commit: 71821e1 Document E85v2 parity regression
 - Do not commit: .claude/settings.local.json
 - Ignore scratch files: tmp_compare/
 - Key validation: E85v2 parity regression passed for Web, CLI, and TunerPro
-- Next safest task: live UI validation of Mirror to sibling maps on real multi-map fuel/timing tables
+- Next safest task: live UI validation of the CSV log overlay playback and graph controls on a real desktop browser session
 
 ## Current Objective
-- Refactor the tuning app into a persistent workspace with shared favorites/folders, inline table editing, and a separate compare flow.
+- Extend the tuning workspace with CSV log overlay, scrubber playback, and docked graphing while preserving the current editing workflow.
 
 ## Active Branch / Workspace
 - Real repo branch: `codex/editor-main`
-- Working copy: `D:\Development\BinViewer`
+- Working copy: `C:\Users\Michael Krymski\Documents\TunerPro Converter`
 
 ## Completed
+- 2026-04-26: Replaced one-off `Map 1 (Inferred)` title guessing with family-topology analysis in [table_ranker.py](C:/Users/Michael%20Krymski/Documents/TunerPro%20Converter/table_ranker.py). Metadata is now computed in batch so sibling presence can distinguish `global_shared`, `implicit_map1_with_explicit_others`, and `banked_map1_collapses_to_main`. Verified real XDF behavior for `Fuel (Main) (Bank 1/2)` -> canonical `Fuel (Main)` on `Map 1`, with `Fuel (Main) (Map 2/3/4)` as explicit siblings.
+- 2026-04-26: Added CSV log overlay mode to the main workspace. The app can now load a single log CSV into the current session, scrub/play through samples, overlay active-cell and dwell-time data on the open table, persist per-family axis mappings and graph toggles in preferences, and show a docked right-side graph panel of selected traces.
 - Read-only viewer baseline preserved and tagged as `v0.1-readonly-baseline`.
 - Workflow, hierarchy, flat list, family grouping, AI Context, and description overlay are in place.
 - Added shared `editor_core.py` session model with stable `table_id`, selection normalization, preview/apply operations, undo/reset, export bundle support, and BIN writeback.
@@ -59,8 +61,11 @@
 - WIP: Polish web editing interactions for real-world tune entry, including persistent last-used operation, better single-cell editing, ctrl/shift selection behavior, stronger selection outlines, preview-in-grid rendering, and family-local map switching.
 - WIP: Polish favorites/folder management so family-level starring, folder ordering, and richer assignment controls feel complete in the new shell.
 - WIP: Deepen compare-mode presentation with richer XDF overlap context for raw ranges and more detailed changed-cell summaries.
+- WIP: Do a live browser pass on the CSV log overlay UX to tune mapping defaults, playback ergonomics, and chart density against real logs.
 
 ## Next Up
+- Validate the CSV log overlay in the browser on several representative tables and tighten any mapping heuristics that still need manual overrides.
+- Consider adding a persisted log-session restore path if keeping a loaded CSV across draft restores becomes important in practice.
 - Add nearest-XDF context and folder/category grouping to CLI compare output so agent summaries are even more actionable.
 - Expand CLI batch manifests with optional preview-only and export steps in one pass.
 - Add family-level starring and easier folder assignment directly from family rows.
@@ -70,6 +75,7 @@
 ## Blockers / Questions
 - Family-level favorites and AI-driven folder assignment are not finished yet, so the current preferences flow is strongest at the table level.
 - Compare mode currently surfaces mapped tables and raw byte ranges, but it does not yet annotate raw ranges with nearest XDF definitions.
+- CSV logs are kept in memory only for the active browser session in v1; they are not restored from disk automatically after a page refresh or app restart.
 
 ## Validation Log
 - 2026-03-17: `python -m py_compile app.py bin_reader.py editor_core.py table_ranker.py tuner_cli.py xdf_parser.py` passed in the workspace copy.
@@ -109,3 +115,9 @@
 - 2026-04-09: Draft snapshot/restore smoke test passed through Flask test-client: `/api/session/<id>/snapshot` returned a full payload and `/api/session/restore` recreated a live session with tables intact.
 - 2026-04-09: AI import with `values_and_axes` smoke test passed through Flask test-client, and the refreshed table payload returned updated X and Y axis labels immediately after apply.
 - 2026-04-10: `node --check static/app.js` passed after adding the explicit mirror-toggle workflow for edits/imports/axis changes; the fan-out path is wired through the shared apply handlers and is ready for live UI validation against real multi-map families.
+- 2026-04-26: `python -m py_compile app.py preferences_store.py log_overlay.py` passed after adding log-session parsing, overlay computation, and preference persistence for axis mappings/graph toggles.
+- 2026-04-26: `node --check static/app.js` passed after adding the workspace log bar, table overlay rendering, graph panel wiring, and log-aware refresh paths.
+- 2026-04-26: Flask test-client log smoke tests passed against `000021571DAA01.xdf`, `Stock - Copy.bin`, and `2026-04-19 00_46_02 000021571DAA01 E85v20ThrottleAggro.bin.csv`:
+- 2026-04-26: `/api/log/parse` returned `200` with `sample_count=106`, parsed metadata, time range, and discoverable columns.
+- 2026-04-26: `/api/preferences` round-trip persisted `log.playback_speed`, `log.graph.enabled_columns`, and `log.axis_mappings`.
+- 2026-04-26: `/api/log/overlay` returned `200` for `Timing (Main) (Map 3)` with explicit mapping `Load actual RAM` + `RPM (rpm)` + `Current Map (-)`, producing `mapped_sample_count=106`, `unmapped_sample_count=0`, a live `active_cell`, and graph series for `RPM (rpm)`, `Load actual RAM`, and `Throttle Position (*)`.

@@ -53,6 +53,8 @@
     </div>
   </div>
 
+  <div class="workspace-logbar" id="workspace-logbar" style="display:none"></div>
+
   <div class="workspace-shell">
     <aside class="workspace-sidebar">
       <section class="workspace-panel workspace-panel--files">
@@ -68,8 +70,14 @@
             <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-bin" accept=".bin,.hex,*" hidden /></label></div>
             <div class="drop-status" id="status-bin">No BIN selected</div>
           </div>
+          <div class="drop-zone drop-zone--compact drop-zone--optional" id="drop-log" data-target="log">
+            <div class="drop-label">Load <strong>.csv</strong> log</div>
+            <div class="drop-sub">or <label class="file-link">browse<input type="file" id="input-log" accept=".csv,text/csv" hidden /></label></div>
+            <div class="drop-status" id="status-log">No CSV log selected</div>
+          </div>
           <div class="file-actions">
             <button class="btn btn-primary btn-sm" id="btn-parse" disabled>Parse / Reload</button>
+            <button class="btn btn-ghost btn-sm" id="btn-parse-log" disabled>Load Log CSV</button>
             <button class="btn btn-ghost btn-sm" id="btn-debug" disabled title="Inspect raw XDF parse: addresses, dims, strides, math">Debug XDF</button>
           </div>
           <div class="progress-bar" id="progress-bar" style="display:none">
