@@ -533,6 +533,7 @@ def _build_table_metadata(table_def: dict, categories_map: dict[int, str], topol
         "path_variant": variants["path_variant"],
         "mode_variant": variants["mode_variant"],
         "variant_label": variants["variant_label"],
+        "axis_suffix": variants["axis_suffix"],
         "subrole": variants["subrole"],
         "description_short": descriptions["description_short"],
         "description_long": descriptions["description_long"],

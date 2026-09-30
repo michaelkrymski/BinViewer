@@ -10,6 +10,7 @@ import time
 from collections import Counter, defaultdict
 
 from editor_core import EditSession, load_session_file, save_session_file
+import readonly_inspector
 
 
 DEFAULT_SESSION_PATH = Path('tuner_session.json')
@@ -102,6 +103,55 @@ def build_parser() -> argparse.ArgumentParser:
     batch_parser.add_argument('manifest', help='Path to a JSON batch manifest')
     batch_parser.add_argument('--session', default=str(DEFAULT_SESSION_PATH), help='Session file path')
 
+    inspect_parser = subparsers.add_parser('inspect', help='Open a read-only XDF/BIN workspace for AI or human review')
+    inspect_subparsers = inspect_parser.add_subparsers(dest='inspect_action', required=True)
+    inspect_open = inspect_subparsers.add_parser('open', help='Create a read-only workspace manifest for an XDF/BIN pair')
+    inspect_open.add_argument('xdf', help='Path to XML/text XDF file')
+    inspect_open.add_argument('bin', help='Path to BIN file')
+    inspect_open.add_argument('--workspace', required=True, help='Output path for the inspection workspace manifest')
+    inspect_subparsers.add_parser('guide', help='Print the model-neutral AI inspection guide')
+
+    inspect_status = inspect_subparsers.add_parser('status', help='Show workspace source identity and table count')
+    add_inspection_workspace_arg(inspect_status)
+    inspect_maps = inspect_subparsers.add_parser('maps', help='Summarize maps, shared definitions, and categories')
+    add_inspection_workspace_arg(inspect_maps)
+    inspect_categories = inspect_subparsers.add_parser('categories', help='List category counts by map')
+    add_inspection_workspace_arg(inspect_categories)
+    inspect_categories.add_argument('--map', dest='map_name', help='Optional map filter')
+
+    inspect_catalog = inspect_subparsers.add_parser('catalog', help='List XDF-defined tables using compact metadata')
+    add_inspection_workspace_arg(inspect_catalog)
+    inspect_catalog.add_argument('--map', dest='map_name', help='Filter to a map or Global')
+    inspect_catalog.add_argument('--bucket', help='Filter workflow category, such as Boost or Fueling')
+    inspect_catalog.add_argument('--family', help='Filter family name/key substring')
+    inspect_catalog.add_argument('--search', help='Search titles, descriptions, categories, and families')
+    inspect_catalog.add_argument('--limit', type=int, default=10000, help='Maximum entries to return (default: all)')
+
+    inspect_search = inspect_subparsers.add_parser('search', help='Search table titles, descriptions, families, and categories')
+    add_inspection_workspace_arg(inspect_search)
+    inspect_search.add_argument('query', help='Search text')
+    inspect_search.add_argument('--map', dest='map_name', help='Optional map filter')
+    inspect_search.add_argument('--bucket', help='Optional workflow category filter')
+    inspect_search.add_argument('--limit', type=int, default=100, help='Maximum matching entries')
+
+    inspect_families = inspect_subparsers.add_parser('families', help='List multi-map table families and their members')
+    add_inspection_workspace_arg(inspect_families)
+    inspect_families.add_argument('--map', dest='map_name', help='Optional map filter')
+    inspect_families.add_argument('--search', help='Family/title search')
+    inspect_families.add_argument('--limit', type=int, default=10000, help='Maximum families to return')
+
+    inspect_show = inspect_subparsers.add_parser('show', help='Read one table with complete axes and values')
+    add_inspection_workspace_arg(inspect_show)
+    inspect_show.add_argument('--table-id', help='Stable table identifier from catalog/families')
+    inspect_show.add_argument('--title', help='Exact or substring title selector')
+    inspect_show.add_argument('--family', help='Family selector; combine with --map to select a variant')
+    inspect_show.add_argument('--map', dest='map_name', help='Map selector such as Map 2')
+
+    inspect_compare = inspect_subparsers.add_parser('compare-maps', help='Compare every map variant in a family')
+    add_inspection_workspace_arg(inspect_compare)
+    inspect_compare.add_argument('--family', required=True, help='Family title or family key')
+    inspect_compare.add_argument('--against-map', help='Baseline map (defaults to Map 1, else first map)')
+
     return parser
 
 
@@ -113,6 +163,10 @@ def add_target_selector_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--bucket', help='Workflow bucket selector')
 
 
+def add_inspection_workspace_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument('--workspace', required=True, help='Read-only inspection workspace manifest')
+
+
 def emit(args, payload) -> int:
     """Print either JSON or readable text."""
     if args.json:
@@ -120,9 +174,12 @@ def emit(args, payload) -> int:
         return 0
 
     command = getattr(args, 'command', '')
+    if command == 'inspect':
+        return emit_inspection(args, payload)
     if command == 'commands':
         print('commands')
         print('  describe Describe commands, operations, selectors, and output contracts')
+        print('  inspect Read-only XDF/BIN discovery, table browsing, and map comparison')
         print('  parse   Create/update a session file from XDF + BIN inputs')
         print('  compare Compare two BINs with one XDF and summarize mapped + raw changes')
         print('  list    List tables with ids, buckets, dirty state, and dimensions')
@@ -283,6 +340,60 @@ def emit(args, payload) -> int:
         return 0
 
     print(payload)
+    return 0
+
+
+def emit_inspection(args, payload) -> int:
+    """Render read-only inspection output in concise text form."""
+    action = args.inspect_action
+    if action == 'open':
+        workspace = payload['workspace']
+        print(f"inspection workspace: {payload['workspace_path']}")
+        print(f"tables: {workspace['table_count']}")
+        print(f"XDF: {workspace['xdf']['path']} | sha256={workspace['xdf']['sha256']}")
+        print(f"BIN: {workspace['bin']['path']} | sha256={workspace['bin']['sha256']}")
+        print('Read-only inspection commands do not edit or export tune files.')
+    elif action == 'guide':
+        print(payload['guide'])
+    elif action == 'status':
+        workspace = payload['workspace']
+        print(f"workspace: {workspace['workspace_id']} | tables={workspace['table_count']}")
+        print(f"XDF: {workspace['xdf']['path']}")
+        print(f"BIN: {workspace['bin']['path']}")
+    elif action == 'maps':
+        print(f"maps={len(payload['maps'])} | shared={payload['shared_table_count']} | total={payload['table_count']}")
+        for item in payload['maps']:
+            print(f"{item['map']} | tables={item['table_count']} | families={item['family_count']}")
+            for bucket, count in item['workflow_buckets'].items():
+                print(f"  {bucket}: {count}")
+    elif action == 'categories':
+        for item in payload['maps']:
+            print(item['map'])
+            print('  workflow: ' + ', '.join(f"{key}={value}" for key, value in item['workflow_buckets'].items()))
+            print('  XDF: ' + ', '.join(f"{key}={value}" for key, value in item['xdf_categories'].items()))
+    elif action in {'catalog', 'search'}:
+        print(f"matched={payload['matched_count']} | returned={payload['returned_count']} | truncated={payload['truncated']}")
+        for item in payload['tables']:
+            dims = f"{item['rows']}x{item['cols']}"
+            inferred = ' inferred' if item['map_inferred'] else ''
+            print(f"{item['table_id']} | {item['map']}{inferred} | {item['category']} | {dims} | {item['family']} | {item['title']}")
+    elif action == 'families':
+        print(f"families={payload['family_count']} | returned={payload['returned_count']} | truncated={payload['truncated']}")
+        for item in payload['families']:
+            print(f"{item['family_key']} | {item['family_title']} | maps={', '.join(item['maps'])} | members={item['member_count']}")
+    elif action == 'show':
+        print(payload['formatted'])
+    elif action == 'compare-maps':
+        print(f"{payload['family_title']} | baseline={payload['baseline_map']} | maps={', '.join(payload['maps'])}")
+        for variant in payload['variants']:
+            print(f"  {variant['map']} | {variant['table_id']} | {variant.get('subrole') or 'main'} | {variant['title']} | {variant['dimensions']['rows']}x{variant['dimensions']['cols']}")
+        for comparison in payload['comparisons']:
+            baseline = comparison['baseline']
+            target = comparison['target']
+            if comparison['status'] == 'aligned':
+                print(f"  {baseline['map']} {baseline['title']} -> {target['map']} {target['title']}: {comparison['changed_cell_count']} changed cells")
+            else:
+                print(f"  {baseline['title']} -> {target['title']}: {comparison['status']} (no cell deltas)")
     return 0
 
 
@@ -571,6 +682,11 @@ def command_describe(args) -> dict:
             'arguments': ['xdf', 'bin', '--bin2 (optional)', '--session'],
         },
         {
+            'name': 'inspect',
+            'summary': 'Open a read-only inspection workspace; see inspect guide for its browse commands.',
+            'arguments': ['open', 'guide', 'status', 'maps', 'categories', 'catalog', 'search', 'families', 'show', 'compare-maps'],
+        },
+        {
             'name': 'compare',
             'summary': 'Compare two BINs with one XDF and return mapped + raw diffs.',
             'arguments': ['xdf', 'base_bin', 'compare_bin', '--limit'],
@@ -666,6 +782,65 @@ def command_describe(args) -> dict:
             raise ValueError(f'Unknown command for describe: {args.command_name}')
         return {'command': command, 'operations': operations, 'selectors': selectors, 'output_shapes': output_shapes}
     return {'commands': commands, 'operations': operations, 'selectors': selectors, 'output_shapes': output_shapes}
+
+
+def command_inspect(args) -> dict:
+    """Run a read-only inspection operation; this path never saves tune data."""
+    action = args.inspect_action
+    if action == 'open':
+        return readonly_inspector.open_workspace(args.xdf, args.bin, args.workspace)
+    if action == 'guide':
+        guide_path = Path(__file__).resolve().parent / 'docs' / 'AI_READ_ONLY_INSPECTION.md'
+        return {'guide_path': str(guide_path), 'guide': guide_path.read_text(encoding='utf-8')}
+
+    manifest, session = readonly_inspector.load_workspace(args.workspace)
+    workspace_summary = {
+        'workspace_id': manifest['workspace_id'],
+        'xdf': manifest['xdf'],
+        'bin': manifest['bin'],
+        'table_count': manifest['table_count'],
+    }
+    if action == 'status':
+        return {'workspace': workspace_summary}
+    if action == 'maps':
+        return {'workspace': workspace_summary, **readonly_inspector.maps_summary(session)}
+    if action == 'categories':
+        return {'workspace': workspace_summary, **readonly_inspector.categories(session, map_name=args.map_name)}
+    if action == 'catalog':
+        result = readonly_inspector.catalog(
+            session,
+            map_name=args.map_name,
+            bucket=args.bucket,
+            family=args.family,
+            search=args.search,
+            limit=args.limit,
+        )
+        return {'workspace': workspace_summary, **result}
+    if action == 'search':
+        result = readonly_inspector.search_tables(
+            session, args.query, map_name=args.map_name, bucket=args.bucket, limit=args.limit,
+        )
+        return {'workspace': workspace_summary, **result}
+    if action == 'families':
+        result = readonly_inspector.families(
+            session, map_name=args.map_name, search=args.search, limit=args.limit,
+        )
+        return {'workspace': workspace_summary, **result}
+    if action == 'show':
+        result = readonly_inspector.show_table(
+            session,
+            table_id=args.table_id,
+            title=args.title,
+            family=args.family,
+            map_name=args.map_name,
+        )
+        return {'workspace': workspace_summary, **result}
+    if action == 'compare-maps':
+        result = readonly_inspector.compare_maps(
+            session, args.family, against_map=args.against_map,
+        )
+        return {'workspace': workspace_summary, **result}
+    raise ValueError(f'Unsupported inspection command: {action}')
 
 
 def command_compare(args) -> dict:
@@ -992,9 +1167,11 @@ def main() -> int:
 
     try:
         if args.command == 'commands':
-            payload = {'commands': ['describe', 'parse', 'compare', 'list', 'maps', 'families', 'show', 'diff', 'apply', 'axis', 'undo', 'reset', 'export', 'batch']}
+            payload = {'commands': ['describe', 'inspect', 'parse', 'compare', 'list', 'maps', 'families', 'show', 'diff', 'apply', 'axis', 'undo', 'reset', 'export', 'batch']}
         elif args.command == 'describe':
             payload = command_describe(args)
+        elif args.command == 'inspect':
+            payload = command_inspect(args)
         elif args.command == 'parse':
             payload = command_parse(args)
         elif args.command == 'compare':
